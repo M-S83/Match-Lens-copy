@@ -4,9 +4,10 @@ How a match video becomes a tactical report: the pipeline steps, the script that
 implements each one, and the artefact each step reads and writes.
 
 **Why this document exists.** `SKILL.md` defines 13 pipeline steps across 4,874
-lines but names only 8 of the repo's 43 scripts, and Steps 1 through 2 name none
-at all. The step → script binding survives only in module docstrings, and nothing
-points the other way. This file supplies the missing binding so the spec and the
+lines but names only 8 of the repo's 43 scripts by filename, and six of its steps
+(1, 1b, 1c, 1d, 1e, 2) bind to no module at all. The step → script binding
+survives mainly in module docstrings, one-directionally, and nothing points the
+other way. This file supplies the missing binding so the spec and the
 implementation can be checked against each other.
 
 Generated 2026-08-12 by static analysis of all 43 Python modules (AST extraction
@@ -74,13 +75,13 @@ all gate on it).
 
 | Step | Script | Reads | Writes |
 |---|---|---|---|
-| gate | `build_readiness_check.py` | 11 pipeline artefacts | `report_readiness.json`, `confidence_reliability_report.json` |
+| gate | `build_readiness_check.py` | 10 pipeline artefacts | `report_readiness.json`, `confidence_reliability_report.json` |
 | 3l | `synthesis_agent.py` | `running_summary.json`, `deep_skill_metrics.json`, `player_summary_cards.json`, `shots_log.json`, … | `tactical_report.md`, `advanced_tactical_report.md`, `opposition_report_*.md` |
 | 4 | `generate_flagged_moments.py`, `generate_pass_network.py`, `report_filter.py` | `running_summary.json`, `pass_sequences.json`, `match_boundaries.json` | `flagged_moments.md`, `pass_network.md` |
 | 5 | `md_to_docx.py` | the `.md` reports | `.docx` |
 
 `build_readiness_check.py` is the pipeline's gate — it reads the widest set of
-artefacts (11) of any module and decides whether reporting may proceed.
+artefacts (10) of any module and decides whether reporting may proceed.
 
 ### Cross-cutting modules
 
@@ -150,11 +151,13 @@ graph TD
 
 Everything after Step 3f reads it; the reports are essentially a rendering of it.
 
-**Three live writers**, all non-atomic (`open(path,"w")` + `json.dump`, no
+**Four live writers**, all non-atomic (`open(path,"w")` + `json.dump`, no
 write-temp-then-rename):
 
 - `accumulator.py:812` — main accumulation
 - `accumulator.py:1915` — summary update path
+- `accumulator.py:1931` — **final write of the run**: persists window-label
+  backfill, goal/state reconciliation and `set_piece_filter_summary`
 - `setpiece_writeback.py:181` — 5fps burst corrections patched back in
 
 Two further modules also write it and are **legacy — do not use**:
@@ -174,8 +177,9 @@ independent representations**, and this is a live source of bugs:
 | flat `ko_1h_s`, `ko_2h_s`, `ht_s`, `ko_et1_s`, `ko_et2_s` | `match_config.json` / `window_plan.json` | **no Python writer — hand-entered by the operator** |
 
 `pipeline_runner_v2.py:1003-1008` documents the rule: read `match_config` first,
-fall back to `match_boundaries.json`. Only one of the file's three reader sites
-actually does so — see `AUDIT-2026-08.md` M1.
+fall back to `match_boundaries.json`. Two of the file's three reader sites do so
+(`:1009-1023`, `:2221-2231`); `_match_state_at_window()` at `:858` does not — see
+`AUDIT-2026-08.md` A8.
 
 ### `source_profile.json` — the admissibility contract
 

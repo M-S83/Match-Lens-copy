@@ -2002,8 +2002,74 @@ write a burst_notes narrative. Leave corrections empty.
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
+def _report_gate_open(match_dir: str, override: bool = False) -> bool:
+    """Enforce SKILL.md:2823 -- "If report_ready is false, Step 4 does not run."
+
+    Returns True if report generation may proceed.
+
+    Fails CLOSED: a missing or unreadable report_readiness.json blocks, because
+    the gate not having run is not evidence that the pipeline is healthy. That is
+    the same reasoning as build_readiness_check's own conservative defaults.
+
+    `override` (--override-readiness) is the deliberate escape hatch: it proceeds
+    anyway, but says so loudly and records the decision in report_readiness.json
+    so the delivered artefacts remain traceable to a human choice.
+    """
+    path = os.path.join(match_dir, "report_readiness.json")
+    readiness, err = None, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            readiness = json.load(f)
+    except FileNotFoundError:
+        err = "report_readiness.json not found (3j_readiness did not produce it)"
+    except (json.JSONDecodeError, OSError) as e:
+        err = f"report_readiness.json unreadable: {e}"
+
+    if err is None:
+        ready    = bool(readiness.get("report_ready"))
+        blocking = readiness.get("blocking_issues") or []
+    else:
+        ready, blocking = False, [err]
+
+    if ready:
+        print("\n  REPORT GATE: report_ready=true — proceeding to report generation.")
+        return True
+
+    print("\n  " + "=" * 70)
+    print("  REPORT GATE: report_ready=FALSE — reports must not be generated.")
+    for item in blocking[:10]:
+        print(f"    - {item}")
+    if len(blocking) > 10:
+        print(f"    ... and {len(blocking) - 10} more")
+
+    if not override:
+        print("  Skipping 3l_synthesis, PHASE 5 (4a/4b) and PHASE 6 (4c/4d).")
+        print("  Fix the blocking issues and re-run, or pass --override-readiness")
+        print("  to generate reports anyway (they will be explicitly untrustworthy).")
+        print("  " + "=" * 70)
+        return False
+
+    print("  --override-readiness given: generating reports ANYWAY.")
+    print("  These reports are NOT supported by the pipeline's own checks.")
+    print("  " + "=" * 70)
+    # Record the override so the delivered artefacts stay traceable.
+    if readiness is not None:
+        try:
+            readiness["readiness_overridden"] = True
+            readiness["readiness_override_note"] = (
+                "Reports generated with --override-readiness despite "
+                "report_ready=false. Findings are not supported by the "
+                "pipeline's readiness checks.")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(readiness, f, indent=2)
+        except OSError as e:
+            print(f"  WARN: could not record override in report_readiness.json: {e}")
+    return True
+
+
 def run_pipeline(match_dir: str, quality: str = "standard",
-                 resume: bool = False, force_reports: bool = False):
+                 resume: bool = False, force_reports: bool = False,
+                 override_readiness: bool = False):
 
     print(f"\n{'='*60}")
     print(f"  Match Lens Pipeline v2")
@@ -2706,8 +2772,22 @@ def run_pipeline(match_dir: str, quality: str = "standard",
         # prompt builders, all surfaced under the "player_summary_cards"
         # stable key in the prompt data block.
         ("3k2_player_cards","player_aggregator",       "build_player_summary_cards"),
-        ("3l_synthesis",    "synthesis_agent",         "run_synthesis"),
     ])
+
+    # ── A1: enforce the readiness gate ────────────────────────────────────────
+    # SKILL.md:2823 -- "Hard rule: If report_ready is false, Step 4 does not run."
+    # Until now nothing read the flag anywhere in the codebase: _run_python_steps
+    # discards build_readiness_check()'s return value, so report_ready was
+    # computed, printed and ignored, and every report stage ran regardless of it.
+    # All three report producers are gated here: 3l_synthesis (which writes
+    # tactical_report.md and the opposition reports), PHASE 5 (4a/4b) and PHASE 6
+    # (4c/4d).
+    _reports_allowed = _report_gate_open(match_dir, override=override_readiness)
+
+    if _reports_allowed:
+        _run_python_steps([
+            ("3l_synthesis",    "synthesis_agent",         "run_synthesis"),
+        ])
 
     # ── PHASE 5: Reports ──────────────────────────────────────────────────────
     # Skip 4a/4b if 3l_synthesis has already produced the reports, unless the
@@ -2715,7 +2795,10 @@ def run_pipeline(match_dir: str, quality: str = "standard",
     # report generators instead.
     synthesis_complete = is_step_done(state, "3l_synthesis")
 
-    if synthesis_complete:
+    if not _reports_allowed:
+        # A1: gate closed. Do not produce 4a/4b.
+        print("\n  PHASE 5: skipped — report gate closed (see REPORT GATE above).")
+    elif synthesis_complete:
         # 3l_synthesis is the preferred report path. If --force-reports was
         # passed, the CLI handler already reset 3l_synthesis to pending and
         # the python_steps loop above re-ran it. Either way, skip 4a/4b
@@ -2804,17 +2887,22 @@ def run_pipeline(match_dir: str, quality: str = "standard",
             mark_step(match_dir, state, step_key, "failed", err)
             return False
 
-    print(f"\n  PHASE 6: Step 4c/4d — Flagged moments + Pass network")
-
-    _run_generator("generate_flagged_moments.py", match_dir,
-                   "4c_flagged_moments", state)
-
-    _pass_seq = os.path.join(match_dir, "pass_sequences.json")
-    if os.path.exists(_pass_seq):
-        _run_generator("generate_pass_network.py", match_dir,
-                       "4d_pass_network", state)
+    if not _reports_allowed:
+        # A1: gate closed. flagged_moments.md and pass_network.md are delivered
+        # artefacts too, so they are gated on the same condition as 4a/4b.
+        print("\n  PHASE 6: skipped — report gate closed (see REPORT GATE above).")
     else:
-        print("  - 4d_pass_network (skipped — pass_sequences.json not found)")
+        print(f"\n  PHASE 6: Step 4c/4d — Flagged moments + Pass network")
+
+        _run_generator("generate_flagged_moments.py", match_dir,
+                       "4c_flagged_moments", state)
+
+        _pass_seq = os.path.join(match_dir, "pass_sequences.json")
+        if os.path.exists(_pass_seq):
+            _run_generator("generate_pass_network.py", match_dir,
+                           "4d_pass_network", state)
+        else:
+            print("  - 4d_pass_network (skipped — pass_sequences.json not found)")
 
     print_progress(state)
     print(f"\n  Pipeline complete. Reports in {match_dir}")
@@ -3162,6 +3250,11 @@ if __name__ == "__main__":
                         help="Regenerate reports even if pipeline steps are incomplete")
     parser.add_argument("--force-merge", action="store_true",
                         help="Force 3e merge and downstream steps to rerun")
+    parser.add_argument("--override-readiness", action="store_true",
+                        help="Generate reports even when report_ready is false. "
+                             "The reports will NOT be supported by the pipeline's "
+                             "own checks; the override is recorded in "
+                             "report_readiness.json.")
     args = parser.parse_args()
 
     if args.estimate_only:
@@ -3252,4 +3345,5 @@ if __name__ == "__main__":
             print("  Reports reset to pending. Re-running...")
 
     run_pipeline(args.match_dir, args.quality, args.resume,
-                 force_reports=args.force_reports)
+                 force_reports=args.force_reports,
+                 override_readiness=args.override_readiness)

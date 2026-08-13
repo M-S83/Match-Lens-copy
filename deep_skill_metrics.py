@@ -1608,15 +1608,30 @@ def calc_player_metrics(summary, confirmations):
         if pid not in by_player:
             by_player[pid] = {"player": pid, "position": obs.get("position"),
                                "ratings": [], "obs": []}
-        by_player[pid]["ratings"].append(obs.get("rating", 3))
+        # A3: no default. The player agent is forbidden from emitting ratings
+        # (SKILL.md:1630 "no evaluation, no ratings"; :4196 "No ratings."), and
+        # "rating" is written nowhere in the pipeline. The previous
+        # obs.get("rating", 3) fabricated a 3 for every observation, so variance
+        # was always 0 and both metrics below were constants -- 1.00 and 0.60 for
+        # every player in every match. Collect only real ratings so that "not
+        # measured" stays distinguishable from "measured".
+        _rating = obs.get("rating")
+        if _rating is not None:
+            by_player[pid]["ratings"].append(_rating)
         by_player[pid]["obs"].append(obs.get("observation", ""))
     player_metrics = []
     for pid, data in by_player.items():
         ratings = data["ratings"]
-        if not ratings:
-            continue
-        avg_r = sum(ratings) / len(ratings)
-        var   = sum((r - avg_r) ** 2 for r in ratings) / len(ratings)
+        if ratings:
+            avg_r = sum(ratings) / len(ratings)
+            var   = sum((r - avg_r) ** 2 for r in ratings) / len(ratings)
+            role_consistency      = round(max(0.0, 1.0 - (var / 4.0)), 2)
+            positioning_stability = round(avg_r / 5.0, 2)
+        else:
+            # Unavailable, not zero -- see _unavailable() and SKILL.md:3200
+            # ("Metrics with value: null are unavailable, not suppressed").
+            role_consistency      = None
+            positioning_stability = None
         escalated = [i for i in confirmations.get("items", [])
                      if i.get("analysis_scope") == "player"
                      and pid in str(i.get("player_involved", ""))
@@ -1624,9 +1639,12 @@ def calc_player_metrics(summary, confirmations):
         player_metrics.append({
             "player":                      pid,
             "position":                    data["position"],
-            "player_role_consistency":     round(max(0.0, 1.0 - (var / 4.0)), 2),
-            "player_positioning_stability":round(avg_r / 5.0, 2),
-            "observations_count":          len(ratings),
+            "player_role_consistency":     role_consistency,
+            "player_positioning_stability":positioning_stability,
+            # Count observations, not ratings: these were identical only because
+            # the fabricated default appended one rating per observation.
+            "observations_count":          len(data["obs"]),
+            "ratings_count":               len(ratings),
             "evidence_tier":               "escalated_confirmation" if escalated else "repeated_pattern",
             "fps_context":                 "1fps for role/positioning; 3-5fps for decision/movement",
         })
@@ -2466,8 +2484,19 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
             ("player_positioning_stability",pm["player_positioning_stability"],
              "Average rating normalised to 0-1"),
         ]:
-            metrics.append({**base, "metric_name": mname, "value": val,
-                             "value_type": "numeric_0_1", "calculation_basis": basis})
+            # A3: both metrics are rating-derived, and no agent emits ratings, so
+            # val is normally None. Mark it unavailable rather than publishing a
+            # null under a numeric_0_1 contract (idiom from line ~2331).
+            _entry = {**base, "metric_name": mname, "value": val,
+                      "value_type": "numeric_0_1" if val is not None else "unavailable",
+                      "calculation_basis": basis}
+            if val is None:
+                _entry["severely_limited"] = True
+                _entry["confidence"]       = 0.0
+                _entry["limitation_note"]  = (
+                    "No rating data: the player agent does not emit 'rating' "
+                    "(SKILL.md forbids ratings), so this metric cannot be computed.")
+            metrics.append(_entry)
 
     # ── Phase 4 new metrics ──────────────────────────────────────────────────────
 

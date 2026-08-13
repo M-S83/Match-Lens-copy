@@ -21,6 +21,7 @@ import argparse, json, os, sys
 from pathlib import Path
 from collections import defaultdict
 from pipeline_schemas import stamp_schema_version
+from pipeline_paths import frame_sort_key
 
 
 def _should_run_ocr(source_profile_path: str) -> bool:
@@ -81,7 +82,8 @@ def run_ocr(match_dir: str,
         print(f"  [OCR] Frames directory not found: {frames_dir}")
         return {}, 0
 
-    all_frames = sorted(Path(frames_dir).glob('*.jpg'))
+    # A14: chronological order — [::sample_rate] below assumes it.
+    all_frames = sorted(Path(frames_dir).glob('*.jpg'), key=frame_sort_key)
     sampled = all_frames[::sample_rate]
     print(f"  [OCR] Scanning {len(sampled)} frames "
           f"(1 per {sample_rate}s from {len(all_frames)} total)")

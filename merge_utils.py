@@ -34,6 +34,7 @@ from pipeline_accessors import (
     get_source_limitations_note,
     get_formation_home,
     get_formation_away,
+    get_moment_time,
 )
 from pipeline_schemas import stamp_schema_version
 from datetime import datetime
@@ -400,7 +401,9 @@ def merge_dual_agents(a_path: str, b_path: str, out_path: str,
     # Accept both "timestamp" (legacy) and "minute" (Fix 32a schema) keys.
     # Skip entries with neither rather than crashing on bracket access.
     def _moment_key(m):
-        return m.get("timestamp") or m.get("minute") or ""
+        # A4: delegate to the canonical accessor so this and ground_truth.py
+        # cannot drift apart again (note: precedence is minute-first there).
+        return get_moment_time(m)
     a_moments = {_moment_key(m): m for m in a.get("key_moments", []) if _moment_key(m)}
     b_moments = {_moment_key(m): m for m in b.get("key_moments", []) if _moment_key(m)}
     merged_moments = []
@@ -488,6 +491,24 @@ def merge_dual_agents(a_path: str, b_path: str, out_path: str,
     # parses the canonical label out of the basename and never returns
     # None.
     merged = {
+        # A13: start from agent A's full output instead of enumerating an
+        # allowlist, then let the merged/computed keys below override it.
+        #
+        # The allowlist silently dropped every field it did not name. Seven of
+        # the structural schema's own top-level keys were missing --
+        # timestamp_range, half, match_state, score_home, score_away,
+        # confidence, source_limitations -- so on EVENT windows (the only ones
+        # that take this dual path) match_state never reached the merged file,
+        # and accumulator.py's `if ms:` skipped the row entirely. The gaps
+        # landed precisely on the goal windows, the ones where the score
+        # changes. merge_single_agent has always worked this way, which is why
+        # routine windows kept the fields and only event windows lost them.
+        #
+        # This is the second time the allowlist has dropped live fields (see
+        # the Task 144 note below, which patched gk_distribution and
+        # far_side_shape individually). Enumerating cannot keep up with the
+        # agent schema; spreading does.
+        **a,
         "agent_id":         agent_id,
         "window":           _derive_window_label(out_path),
         "merge_type":       "dual_agent",

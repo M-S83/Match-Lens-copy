@@ -19,7 +19,8 @@ import json
 import os
 import sys
 from datetime import datetime
-from pipeline_accessors import get_window_start_seconds, get_window_end_seconds
+from pipeline_accessors import (get_window_start_seconds, get_window_end_seconds,
+                                 get_moment_time)
 from pipeline_schemas import stamp_schema_version
 
 
@@ -99,7 +100,11 @@ def find_event_in_moments(event: dict, key_moments: list) -> dict | None:
     event_type = event.get("type", "").lower()
 
     for moment in key_moments:
-        moment_ts   = moment.get("timestamp", "")
+        # A4: was moment.get("timestamp", "") -- the legacy key only. Current
+        # agents emit "minute" (Fix 32a schema), so this read "" for every
+        # moment and seconds_match() was always False, scoring every known
+        # event as missed. Use the canonical accessor.
+        moment_ts   = get_moment_time(moment)
         moment_type = moment.get("type", "").lower()
 
         ts_ok   = seconds_match(event_ts, moment_ts)

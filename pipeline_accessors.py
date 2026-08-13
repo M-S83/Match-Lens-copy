@@ -77,6 +77,26 @@ def get_marking(record: dict):
     return record.get("marking_system") or record.get("marking") or None
 
 
+def get_moment_time(moment: dict) -> str:
+    """Return the time string from a ``key_moments`` entry.
+
+    Canonical key is ``minute`` (Fix 32a schema) -- the value the current
+    structural agent emits. ``timestamp`` is the legacy alias kept by older
+    merged files and by set-piece records.
+
+    Both forms parse: ``ground_truth.parse_timestamp_to_seconds`` accepts
+    ``"18m47s"`` and ``"18:47"`` alike, so callers do not need to know which
+    key supplied the value.
+
+    Returns "" when neither key is present, so callers can filter falsy values
+    rather than guarding every bracket access.
+
+    See AUDIT-2026-08.md A4: ``ground_truth.py`` read ``timestamp`` only, so it
+    received "" for every moment and scored every known event as missed.
+    """
+    return moment.get("minute") or moment.get("timestamp") or ""
+
+
 def get_formation_home(record: dict):
     """Return the home team's formation string from a structural agent dict.
 

@@ -22,7 +22,8 @@ from pipeline_accessors import (
     get_window_start_seconds,
     get_window_end_seconds,
 )
-from pipeline_paths import find_agent_output, find_merged_window
+from pipeline_paths import (find_agent_output, find_merged_window,
+                            frame_sort_key)
 
 # Fix 42: bump on every fix. Surfaced into the report manifest (Section 5).
 MATCH_LENS_VERSION = "0.42"
@@ -195,10 +196,16 @@ def get_window_frames(match_dir: str, window: dict, n: int) -> list:
     # Try per-window subdirectory first
     subdir = os.path.join(match_dir, "frames", window_id)
     if os.path.exists(subdir):
-        all_frames = sorted([
-            os.path.join(subdir, f) for f in os.listdir(subdir)
-            if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-        ])
+        # A14: sort by parsed timestamp, not lexically. "{m:02d}" emits three
+        # digits past minute 99, and the video clock includes pre-match and
+        # half-time, so a 90-minute match commonly runs 105-115 video minutes.
+        # Lexically, frame_100m00s sorts BEFORE frame_97m00s, handing the agent
+        # a window whose frames run out of order while the prompt states they
+        # are chronological. Secondary key keeps unparseable names deterministic.
+        all_frames = sorted(
+            [os.path.join(subdir, f) for f in os.listdir(subdir)
+             if f.lower().endswith(('.jpg', '.jpeg', '.png'))],
+            key=frame_sort_key)
         return sample_frames(all_frames, n)
 
     # Flat directory — filter by timestamp in filename
@@ -206,10 +213,11 @@ def get_window_frames(match_dir: str, window: dict, n: int) -> list:
     if not os.path.exists(flat_dir):
         return []
 
-    all_files = sorted([
-        f for f in os.listdir(flat_dir)
-        if f.lower().endswith(('.jpg', '.jpeg', '.png'))
-    ])
+    # A14: chronological, not lexical — see get_window_frames above.
+    all_files = sorted(
+        [f for f in os.listdir(flat_dir)
+         if f.lower().endswith(('.jpg', '.jpeg', '.png'))],
+        key=frame_sort_key)
 
     filtered = []
     for fname in all_files:

@@ -17,6 +17,7 @@ import os, json
 from pathlib import Path
 from typing import Optional
 from pipeline_schemas import stamp_schema_version
+from pipeline_paths import frame_sort_key
 
 try:
     from PIL import Image, ImageStat
@@ -225,9 +226,10 @@ def preprocess_window(match_dir: str, window_id: str,
     if not frames_dir.exists():
         frames_dir = Path(match_dir) / "frames"
 
-    all_frames = sorted([
-        str(p) for p in frames_dir.glob("*.jpg")
-    ] + [str(p) for p in frames_dir.glob("*.png")])
+    # A14: chronological order — downstream slices this list.
+    all_frames = sorted([str(p) for p in frames_dir.glob("*.jpg")]
+                        + [str(p) for p in frames_dir.glob("*.png")],
+                        key=frame_sort_key)
 
     if not all_frames or not HAS_PIL:
         return {

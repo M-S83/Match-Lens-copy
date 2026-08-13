@@ -186,3 +186,28 @@ def find_all_merged_windows(logs_dir: str, extra_dirs=None):
                 paths.extend(sorted(glob.glob(os.path.join(d, "merged_*.json"))))
     seen = set()
     return [p for p in paths if not (p in seen or seen.add(p))]
+
+
+# ── Frame ordering ────────────────────────────────────────────────────────────
+
+_FRAME_TS_RE = re.compile(r'frame_([0-9]+)m([0-9]+)s')
+
+
+def frame_sort_key(path: str):
+    """Sort key that orders ``frame_MMmSSs.jpg`` files chronologically.
+
+    Frame names are built with ``f"frame_{m:02d}m{sec:02d}s.jpg"``, which emits
+    THREE digits past minute 99. Because the video clock includes pre-match and
+    half-time, a 90-minute match routinely runs 105-115 video minutes, so plain
+    lexical ``sorted()`` places ``frame_100m00s`` *before* ``frame_97m00s``.
+    Any consumer that slices the result (window sampling, ``[::step]`` OCR
+    sampling) then reads the second half out of order.
+
+    Returns ``(seconds, basename)``. Unparseable names sort first with -1 and
+    are ordered deterministically by name rather than raising.
+
+    See AUDIT-2026-08.md A14.
+    """
+    base = os.path.basename(str(path))
+    m = _FRAME_TS_RE.search(base)
+    return (int(m.group(1)) * 60 + int(m.group(2)) if m else -1, base)

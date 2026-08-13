@@ -26,6 +26,7 @@ Usage:
 import cv2
 import os
 import glob
+from pipeline_paths import frame_sort_key
 
 
 def find_source_video(match_dir: str) -> str:
@@ -101,7 +102,9 @@ def extract_segment(video_path: str,
     """
     os.makedirs(out_dir, exist_ok=True)
 
-    existing = sorted(glob.glob(os.path.join(out_dir, "frame_*.jpg")))
+    # A14: chronological order — these paths are returned to callers.
+    existing = sorted(glob.glob(os.path.join(out_dir, "frame_*.jpg")),
+                      key=frame_sort_key)
     if existing:
         return existing
 

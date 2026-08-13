@@ -1047,6 +1047,29 @@ def _unavailable(name, reason):
 
 # -- System-level --------------------------------------------------------------
 
+# ── A5/A6: single source of truth for metric formulas ────────────────────────
+# These constants are used BOTH to compute the metric and to render its
+# calculation_basis string, so the published provenance cannot drift away from
+# the arithmetic. Previously the weights/divisors lived as literals in the
+# computation while calculation_basis was a hand-written string quoting the
+# SKILL.md formula -- so the two disagreed silently and the report's methodology
+# text described a calculation the code did not perform.
+#
+# NOTE: these values intentionally differ from SKILL.md. See AUDIT-2026-08.md
+# A5/A6 -- resolving spec-vs-code is a product decision and has NOT been made
+# here; only the false provenance strings were corrected.
+COMPACTNESS_W_HEIGHT     = 0.80   # SKILL.md:3208 says 0.60 (and "stability")
+COMPACTNESS_W_PRESSING   = 0.20   # SKILL.md:3208 says 0.40
+COMPACTNESS_PRESS_ABSENT = 0.30   # assumed pressing when no pressing data exists
+ROUTE_DIVERSITY_CEILING  = 4      # SKILL.md:3225 says 12
+
+COMPACTNESS_BASIS = (
+    f"Line height position ({COMPACTNESS_W_HEIGHT:.0%}) + pressing intensity "
+    f"({COMPACTNESS_W_PRESSING:.0%}); deeper line = more compact")
+ROUTE_DIVERSITY_BASIS = (
+    f"Distinct zone-to-zone route pairs / {ROUTE_DIVERSITY_CEILING} (ceiling)")
+
+
 def calc_compactness(summary):
     """
     Compactness: measured from actual average line height, not stability of movement.
@@ -1065,9 +1088,10 @@ def calc_compactness(summary):
     # Invert: lower line = higher compactness (0m = 1.0, 105m = 0.0)
     height_score = max(0.0, min(1.0, 1.0 - (avg_height_pct / 100.0)))
     scores     = [w.get("avg_score") for w in pressing if w.get("avg_score") is not None]
-    press_norm = (sum(scores) / len(scores) / 10.0) if scores else 0.3
-    # 80% line height position, 20% pressing activity
-    score = round(height_score * 0.80 + press_norm * 0.20, 2)
+    press_norm = ((sum(scores) / len(scores) / 10.0) if scores
+                  else COMPACTNESS_PRESS_ABSENT)
+    score = round(height_score * COMPACTNESS_W_HEIGHT
+                  + press_norm * COMPACTNESS_W_PRESSING, 2)
     return score, avg_height_m, len(heights), ["repeated_pattern"], compactness_category(score)
 
 
@@ -1323,6 +1347,11 @@ def calc_chance_creation_profile(summary, passes):
             "sequence_length":shot.get("sequence_length") or
                               (match_seq.get("length") if match_seq else None),
             "shot_zone":      shot.get("origin_column", "unknown"),
+            # A7: danger is a ROW property (six_yard_box/penalty_spot/edge_of_box/
+            # outside_box, SKILL.md:1790); shot_zone above is the COLUMN (lateral)
+            # vocabulary. They were being compared against each other, so the
+            # high-danger test could never match. Carry the row through explicitly.
+            "shot_row":       shot.get("origin_row", "unknown"),
             "shot_type":      shot.get("shot_type", "unknown"),
             "outcome":        shot.get("outcome", "unknown"),
             "target_zone":    shot.get("target_zone", "unknown"),
@@ -1337,6 +1366,9 @@ def calc_chance_creation_profile(summary, passes):
                 "route":          _infer_route(s),
                 "sequence_length":s.get("length"),
                 "shot_zone":      s.get("zone_end", "unknown"),
+                # Threat-sequence fallback carries no shot origin row, so danger
+                # cannot be classified for these -- say so rather than defaulting.
+                "shot_row":       "unknown",
                 "shot_type":      "unknown",
                 "outcome":        s.get("outcome"),
                 "target_zone":    "unknown",
@@ -1351,13 +1383,18 @@ def calc_chance_creation_profile(summary, passes):
     top_origin = max(by_origin, key=by_origin.get) if by_origin else "unknown"
     top_route  = max(by_route,  key=by_route.get)  if by_route  else "unknown"
 
-    # Zone quality: high-danger = six_yard_box + penalty_spot, low = edge/outside
-    high_danger_zones = {"six_yard_box", "penalty_spot"}
-    high_danger = sum(1 for c in chances
-                      if c.get("shot_zone") in high_danger_zones
-                      or c.get("origin_row") in high_danger_zones)
-    low_danger  = len(chances) - high_danger
-    danger_pct  = round(high_danger / len(chances) * 100) if chances else 0
+    # Zone quality: high-danger = six_yard_box + penalty_spot, low = edge/outside.
+    # A7: classify on the ROW only, and only over chances whose row is actually
+    # known. Previously the denominator was every chance, so unclassifiable ones
+    # counted as low-danger and the percentage read as a measured 0%.
+    high_danger_rows = {"six_yard_box", "penalty_spot"}
+    low_danger_rows  = {"edge_of_box", "outside_box"}
+    classifiable = [c for c in chances
+                    if c.get("shot_row") in high_danger_rows | low_danger_rows]
+    high_danger = sum(1 for c in classifiable if c["shot_row"] in high_danger_rows)
+    low_danger  = len(classifiable) - high_danger
+    danger_pct  = (round(high_danger / len(classifiable) * 100)
+                   if classifiable else None)
 
     profile = {
         "total_chances":       len(chances),
@@ -1368,11 +1405,20 @@ def calc_chance_creation_profile(summary, passes):
         "high_danger_chances": high_danger,
         "low_danger_chances":  low_danger,
         "high_danger_pct":     danger_pct,
+        # A7: how many chances the percentage is actually based on. Without this
+        # a 100% from one classifiable chance is indistinguishable from 100%
+        # across twenty.
+        "chances_with_known_row": len(classifiable),
         "avg_sequence_length": round(sum(seq_lengths)/len(seq_lengths), 1) if seq_lengths else None,
         "data_source":         "shots_for" if shots else "threat_sequences_fallback",
-        "summary":             (f"{len(chances)} chances: {danger_pct}% from high-danger zones "
-                                f"(six-yard box or penalty spot); most from {football_zone(top_origin)}"
-                                f" via {top_route} route"),
+        "summary":             ((f"{len(chances)} chances: {danger_pct}% from high-danger zones "
+                                 f"(six-yard box or penalty spot, {len(classifiable)} of "
+                                 f"{len(chances)} classifiable); most from {football_zone(top_origin)}"
+                                 f" via {top_route} route")
+                                if danger_pct is not None else
+                                (f"{len(chances)} chances: shot origin row not recorded, so "
+                                 f"high-danger share is unavailable; most from "
+                                 f"{football_zone(top_origin)} via {top_route} route")),
     }
     tiers = ["direct"] if shots else ["repeated_pattern"]
     return profile, len(chances), tiers
@@ -1441,7 +1487,7 @@ def calc_build_up_route_diversity(passes):
         return 0.0, 0, 0, ["suggestive"]
     zone_pairs = set((s.get("zone_start"), s.get("zone_end"))
                      for s in sequences if s.get("zone_start") and s.get("zone_end"))
-    score = round(min(len(zone_pairs) / 4.0, 1.0), 2)  # 4 = realistic max for non-baseline routes
+    score = round(min(len(zone_pairs) / float(ROUTE_DIVERSITY_CEILING), 1.0), 2)
     return score, len(sequences), len(zone_pairs), ["repeated_pattern"]
 
 
@@ -2282,7 +2328,7 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
          "avg_line_height_m": avg_h_m,
          "summary": f"defensive compactness: {compact_cat} (avg line {avg_h_m}m from own goal)"},
         "profile", t, 0.75, w,
-        "Line height stability (60%) + pressing intensity (40%)",
+        COMPACTNESS_BASIS,
         traceable_to=["line_height_by_window", "pressing_by_window"]))
 
     avg_10, avg_01, w, t = calc_pressing_intensity(summary)
@@ -2387,7 +2433,7 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
         {"score": v, "distinct_routes": distinct,
          "summary": f"{distinct} distinct passing routes observed across the match"},
         "profile", t, 0.75, w,
-        "Distinct zone-to-zone route pairs / 12 (recalibrated ceiling)",
+        ROUTE_DIVERSITY_BASIS,
         traceable_to=["pass_sequences"]))
 
 

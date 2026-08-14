@@ -387,3 +387,22 @@ def test_synthesis_bundle_exposes_moments_from_the_summary(tmp_path):
     bundle = sa.build_input_bundle(str(tmp_path))
     assert bundle["flagged_moments"] == [{"minute": "38:00"}]
     assert bundle["key_moments"] == [{"minute": "12:00"}]
+
+
+# ── Deliverable set: tactical + one opposition report per team, nothing else ─
+
+def test_deliverables_are_exactly_three_reports():
+    """The pipeline emits tactical_report.md and one opposition report per
+    team. The unreachable 'advanced' tier that would have produced three more
+    is removed."""
+    import synthesis_agent as sa
+    src = open(sa.__file__, encoding="utf-8").read()
+    for token in ("advanced_tactical_report", "advanced_opposition_report",
+                  "synthesise_advanced", "ADVANCED_SYNTHESIS_ADDITIONS"):
+        assert token not in src, f"advanced synthesis tier is back: {token}"
+
+
+def test_docx_conversion_targets_only_the_three_reports():
+    import md_to_docx
+    assert md_to_docx.REPORT_FILES == ["tactical_report.md",
+                                       "opposition_report_*.md"]

@@ -65,6 +65,30 @@ def _api_error(name):
 
 
 _stub("cv2")
+# python-docx: md_to_docx imports Document plus several submodules at module
+# scope. Stub the package and each submodule it reaches for.
+if "docx" not in sys.modules:
+    try:
+        __import__("docx")
+    except ImportError:
+        _docx = types.ModuleType("docx")
+        _callable = lambda *a, **k: None
+        _docx.Document = _callable
+        for sub, attrs in (
+            ("docx.shared",    {"Pt": _callable, "RGBColor": _callable,
+                                "Inches": _callable, "Cm": _callable}),
+            ("docx.enum.text", {"WD_ALIGN_PARAGRAPH": types.SimpleNamespace(
+                                    CENTER=1, LEFT=0, RIGHT=2, JUSTIFY=3)}),
+            ("docx.enum.table",{"WD_TABLE_ALIGNMENT": types.SimpleNamespace(CENTER=1)}),
+            ("docx.oxml.ns",   {"qn": lambda x: x}),
+            ("docx.oxml",      {"OxmlElement": _callable}),
+            ("docx.enum",      {}),
+        ):
+            m = types.ModuleType(sub)
+            for k, v in attrs.items():
+                setattr(m, k, v)
+            sys.modules[sub] = m
+        sys.modules["docx"] = _docx
 _stub("numpy")
 _stub("easyocr")
 _stub("PIL", Image=types.SimpleNamespace(

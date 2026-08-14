@@ -76,7 +76,7 @@ all gate on it).
 | Step | Script | Reads | Writes |
 |---|---|---|---|
 | gate | `build_readiness_check.py` | 10 pipeline artefacts | `report_readiness.json`, `confidence_reliability_report.json` |
-| 3l | `synthesis_agent.py` | `running_summary.json`, `deep_skill_metrics.json`, `player_summary_cards.json`, `shots_log.json`, … | `tactical_report.md`, `advanced_tactical_report.md`, `opposition_report_*.md` |
+| 3l | `synthesis_agent.py` | `running_summary.json`, `deep_skill_metrics.json`, `player_summary_cards.json`, `shots_log.json`, … | `tactical_report.md`, `opposition_report_*.md` (one per team) |
 | 4 | `report_filter.py` | `match_config.json` | filtered report level |
 | 5 | `md_to_docx.py` | `tactical_report.md`, `opposition_report_*.md` | `.docx` |
 
@@ -228,3 +228,11 @@ rendered markdown file. Pass-sequence data still drives the build-up metrics in
 This also closed a latent bug: `synthesis_agent` read `flagged_moments.md` as an
 input, but `3l_synthesis` ran *before* the phase that generated it, so on a first
 run the reports saw no flagged moments at all.
+
+The unreachable "advanced synthesis" tier (`synthesise_advanced` and its two
+writers, ~240 lines) was removed at the same time. Nothing called it, but it
+would have produced `advanced_tactical_report.md` and two
+`advanced_opposition_report_*.md` files.
+
+**The deliverable set is now exactly three documents:** `tactical_report.md`
+plus one `opposition_report_<team>.md` per team.

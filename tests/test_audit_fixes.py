@@ -275,3 +275,72 @@ def test_a14_all_frame_sorts_use_the_canonical_key():
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             f"{mod}.py"), encoding="utf-8").read()
         assert "frame_sort_key" in src, f"{mod} does not use the canonical key"
+
+
+# ── NO FABRICATION: absent input must never become a plausible number ────────
+#
+# The system's credibility rests on every published figure tracing to a real
+# observation. These tests assert that missing data yields None/unavailable
+# rather than a neutral-looking value that reads as a measurement.
+
+def test_nofab_compactness_unavailable_when_line_never_read():
+    from deep_skill_metrics import calc_compactness
+    score, avg_m, n, _, cat = calc_compactness(
+        {"line_height_by_window": [], "pressing_by_window": []})
+    assert score is None, "0.0 would publish 'maximally expansive' for unread data"
+    assert avg_m is None and n == 0
+
+
+def test_nofab_compactness_uses_height_alone_when_pressing_absent():
+    """Pressing used to fall back to an assumed 0.30, inventing ~20% of the
+    score. With pressing absent the score must be height alone, not a blend
+    with a guess."""
+    from deep_skill_metrics import calc_compactness
+    score, _, _, _, _ = calc_compactness(
+        {"line_height_by_window": [{"avg_pct": 40.0}], "pressing_by_window": []})
+    assert score == 0.6                       # 1 - 0.40, full weight
+    # the old behaviour blended in 0.30 -> 0.6*0.8 + 0.3*0.2 = 0.54
+    assert score != 0.54
+
+
+def test_nofab_no_assumed_pressing_constant_remains():
+    import deep_skill_metrics as d
+    assert not hasattr(d, "COMPACTNESS_PRESS_ABSENT")
+
+
+def test_nofab_momentum_renormalises_over_measured_components():
+    """A missing component must contribute nothing, not a neutral 0.5."""
+    from deep_skill_metrics import calc_momentum_by_window
+    got = calc_momentum_by_window({
+        "pressing_by_window":    [{"window": "W01", "avg_score": 8.0}],
+        "line_height_by_window": [],
+        "possession_by_window":  [],
+    })
+    (row,) = got
+    # press only: 0.8 renormalised over its own weight -> 0.8, not a 0.5 blend
+    assert row["momentum"] == 0.8
+    assert row["components"]["line_height"] is None
+    assert row["components"]["possession"] is None
+
+
+def test_nofab_build_up_rates_unavailable_with_no_sequences():
+    """Used to return 0.0 rates, published as '0% reached the final third' --
+    a verdict on build-up that was never observed."""
+    from deep_skill_metrics import calc_build_up_effectiveness
+    v, total, prog, threats, ft, prog_rate, ft_rate, conv_rate, _ = \
+        calc_build_up_effectiveness({"sequences": []})
+    assert v is None
+    assert prog_rate is None and ft_rate is None and conv_rate is None
+    assert total == 0
+
+
+def test_nofab_build_up_rates_still_compute_with_real_sequences():
+    from deep_skill_metrics import calc_build_up_effectiveness
+    seqs = [{"progressive": True, "outcome": "shot",
+             "zone_start": "middle", "zone_end": "attacking_third"},
+            {"progressive": False, "outcome": "loss",
+             "zone_start": "middle", "zone_end": "middle"}]
+    v, total, prog, threats, ft, prog_rate, ft_rate, conv_rate, _ = \
+        calc_build_up_effectiveness({"sequences": seqs})
+    assert total == 2 and prog == 1 and threats == 1
+    assert prog_rate == 0.5 and ft_rate == 0.5 and conv_rate == 0.5

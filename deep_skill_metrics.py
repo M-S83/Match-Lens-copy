@@ -313,22 +313,33 @@ def calc_momentum_by_window(summary: dict) -> list:
             result.append({"window": win, "momentum": None, "components": {}})
             continue
 
-        # Normalise each to 0-1
-        press_n = min(press / 10.0, 1.0) if press is not None else 0.5
-        line_n  = min(line_pct / 60.0, 1.0) if line_pct is not None else 0.5
-        poss_n  = poss / 100.0 if poss is not None else 0.5
-
-        # Weighted composite: press 35%, possession 40%, line height 25%
-        weights = (0.35, 0.40, 0.25) if poss is not None else (0.55, 0.0, 0.45)
-        momentum = round(press_n * weights[0] + poss_n * weights[1] + line_n * weights[2], 3)
+        # NO FABRICATION: each component used to fall back to 0.5 when absent.
+        # Possession was safe (its weight dropped to 0.0), but press and line
+        # height were not -- a missing reading contributed up to 55% of the
+        # momentum score as pure invention. Renormalise the weights over the
+        # components actually measured, so absent inputs contribute nothing.
+        # Base weights: press 35%, possession 40%, line height 25%.
+        components = []
+        if press is not None:
+            components.append((min(press / 10.0, 1.0), 0.35))
+        if poss is not None:
+            components.append((poss / 100.0, 0.40))
+        if line_pct is not None:
+            components.append((min(line_pct / 60.0, 1.0), 0.25))
+        weight_total = sum(w for _, w in components)
+        if not weight_total:
+            result.append({"window": win, "momentum": None, "components": {}})
+            continue
+        momentum = round(sum(v * w for v, w in components) / weight_total, 3)
 
         result.append({
             "window":   win,
             "momentum": momentum,
+            # None means "not observed in this window", not "measured as zero".
             "components": {
-                "pressing":   round(press_n, 3),
-                "possession": round(poss_n, 3) if poss is not None else None,
-                "line_height":round(line_n, 3),
+                "pressing":    round(min(press / 10.0, 1.0), 3) if press is not None else None,
+                "possession":  round(poss / 100.0, 3) if poss is not None else None,
+                "line_height": round(min(line_pct / 60.0, 1.0), 3) if line_pct is not None else None,
             },
         })
     return result
@@ -1060,7 +1071,6 @@ def _unavailable(name, reason):
 # here; only the false provenance strings were corrected.
 COMPACTNESS_W_HEIGHT     = 0.80   # SKILL.md:3208 says 0.60 (and "stability")
 COMPACTNESS_W_PRESSING   = 0.20   # SKILL.md:3208 says 0.40
-COMPACTNESS_PRESS_ABSENT = 0.30   # assumed pressing when no pressing data exists
 ROUTE_DIVERSITY_CEILING  = 4      # SKILL.md:3225 says 12
 
 COMPACTNESS_BASIS = (
@@ -1082,16 +1092,25 @@ def calc_compactness(summary):
     pressing  = summary.get("pressing_by_window",   [])
     heights   = [w.get("avg_pct") for w in line_data if w.get("avg_pct") is not None]
     if not heights:
-        return 0.0, None, 0, ["suggestive"], "unknown"
+        # NO FABRICATION: 0.0 here would publish "maximally expansive" for a
+        # match where the defensive line was never read at all.
+        return None, None, 0, ["suggestive"], "unknown"
     avg_height_pct = sum(heights) / len(heights)
     avg_height_m   = round(avg_height_pct / 100.0 * PITCH_LENGTH_M, 1)
     # Invert: lower line = higher compactness (0m = 1.0, 105m = 0.0)
     height_score = max(0.0, min(1.0, 1.0 - (avg_height_pct / 100.0)))
     scores     = [w.get("avg_score") for w in pressing if w.get("avg_score") is not None]
-    press_norm = ((sum(scores) / len(scores) / 10.0) if scores
-                  else COMPACTNESS_PRESS_ABSENT)
-    score = round(height_score * COMPACTNESS_W_HEIGHT
-                  + press_norm * COMPACTNESS_W_PRESSING, 2)
+    # NO FABRICATION: pressing used to fall back to an assumed 0.30 when none
+    # was ever recorded, so ~20% of every published compactness score was
+    # invented. Renormalise over the components actually measured -- line height
+    # is a real reading, so the metric stays available, computed only from what
+    # was observed.
+    if scores:
+        press_norm = sum(scores) / len(scores) / 10.0
+        score = round(height_score * COMPACTNESS_W_HEIGHT
+                      + press_norm * COMPACTNESS_W_PRESSING, 2)
+    else:
+        score = round(height_score, 2)          # height at full weight
     return score, avg_height_m, len(heights), ["repeated_pattern"], compactness_category(score)
 
 
@@ -1109,7 +1128,10 @@ def calc_pressing_intensity(summary):
 def calc_build_up_effectiveness(passes):
     sequences  = passes.get("sequences", [])
     if not sequences:
-        return 0.0, 0, 0, 0, 0, 0.0, 0.0, 0.0, ["suggestive"]
+        # NO FABRICATION: returning 0.0 rates made the caller publish "0% of
+        # sequences reached the final third" -- a measured-looking verdict on
+        # build-up play that was never observed.
+        return None, 0, 0, 0, 0, None, None, None, ["suggestive"]
     progressive = sum(1 for s in sequences if s.get("progressive") is True)
     threats     = sum(1 for s in sequences if s.get("outcome") in ("shot", "cross", "goal"))
     # final_third: sequences that actually reached the attacking third (more meaningful than 'progressive')
@@ -2326,7 +2348,12 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
     metrics.append(make_metric("compactness_score", "match", ["shape", "pressing"],
         {"score": v, "category": compact_cat,
          "avg_line_height_m": avg_h_m,
-         "summary": f"defensive compactness: {compact_cat} (avg line {avg_h_m}m from own goal)"},
+         "basis_components": (["line_height", "pressing"]
+                              if summary.get("pressing_by_window") else ["line_height"]),
+         "summary": (f"defensive compactness: {compact_cat} "
+                     f"(avg line {avg_h_m}m from own goal)"
+                     if v is not None else
+                     "defensive line never read -- compactness unavailable")},
         "profile", t, 0.75, w,
         COMPACTNESS_BASIS,
         traceable_to=["line_height_by_window", "pressing_by_window"]))
@@ -2347,10 +2374,12 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
          "final_third_sequences": ft,
          "threat_sequences":      threats,
          "total_sequences":       total_seqs,
-         "final_third_rate_pct":  round(ft_rate * 100, 1),
-         "conversion_rate_pct":   round(conv_rate * 100, 1),
-         "summary": f"{round(ft_rate*100)}% of sequences reached the final third; "
-                    f"{round(conv_rate*100, 1)}% ended in shot/cross"},
+         "final_third_rate_pct":  round(ft_rate * 100, 1) if ft_rate is not None else None,
+         "conversion_rate_pct":   round(conv_rate * 100, 1) if conv_rate is not None else None,
+         "summary": (f"{round(ft_rate*100)}% of sequences reached the final third; "
+                     f"{round(conv_rate*100, 1)}% ended in shot/cross"
+                     if ft_rate is not None and conv_rate is not None else
+                     "no pass sequences recorded -- build-up effectiveness unavailable")},
         "profile", t, 0.75, total_seqs,
         "Progressive sequences and shot/cross-ending sequences as percentage of total",
         traceable_to=["pass_sequences"]))

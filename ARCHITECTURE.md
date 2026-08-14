@@ -77,8 +77,8 @@ all gate on it).
 |---|---|---|---|
 | gate | `build_readiness_check.py` | 10 pipeline artefacts | `report_readiness.json`, `confidence_reliability_report.json` |
 | 3l | `synthesis_agent.py` | `running_summary.json`, `deep_skill_metrics.json`, `player_summary_cards.json`, `shots_log.json`, … | `tactical_report.md`, `advanced_tactical_report.md`, `opposition_report_*.md` |
-| 4 | `generate_flagged_moments.py`, `generate_pass_network.py`, `report_filter.py` | `running_summary.json`, `pass_sequences.json`, `match_boundaries.json` | `flagged_moments.md`, `pass_network.md` |
-| 5 | `md_to_docx.py` | the `.md` reports | `.docx` |
+| 4 | `report_filter.py` | `match_config.json` | filtered report level |
+| 5 | `md_to_docx.py` | `tactical_report.md`, `opposition_report_*.md` | `.docx` |
 
 `build_readiness_check.py` is the pipeline's gate — it reads the widest set of
 artefacts (10) of any module and decides whether reporting may proceed.
@@ -139,7 +139,9 @@ graph TD
     DSMJ --> SA
     PSC --> SA
     SA --> TR[tactical_report.md]
+    SA --> OR[opposition_report_*.md]
     TR --> MD[md_to_docx]
+    OR --> MD
     MD --> DOCX[.docx]
 ```
 
@@ -209,3 +211,20 @@ Structural properties to keep in mind when changing anything:
    `dotenv`→python-dotenv, `docx`→python-docx).
 
 See `AUDIT-2026-08.md` for verified defects.
+
+---
+
+## Removed deliverables (2026-08)
+
+`flagged_moments.md` and `pass_network.md` are no longer produced, and
+`generate_flagged_moments.py` / `generate_pass_network.py` are deleted.
+
+Flagged moments are now folded into the tactical and opposition reports where
+they are relevant, sourced as structured records from
+`running_summary.json` (`flagged_moments`, `key_moments`) rather than from a
+rendered markdown file. Pass-sequence data still drives the build-up metrics in
+`deep_skill_metrics.json`; only the standalone network report is gone.
+
+This also closed a latent bug: `synthesis_agent` read `flagged_moments.md` as an
+input, but `3l_synthesis` ran *before* the phase that generated it, so on a first
+run the reports saw no flagged moments at all.

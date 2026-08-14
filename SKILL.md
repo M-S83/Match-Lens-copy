@@ -59,8 +59,11 @@ the prompt level in Step 4, not left to style discretion.
 Produces structured output files from a single match video:
 - `tactical_report.md` -- full tactical breakdown of both teams
 - `opposition_report_[team].md` -- opponent-facing scouting report
-- `flagged_moments.md` -- 10-20 individually timestamped key moments
-- `pass_network.md` -- full pass sequence log, network map, and pattern analysis
+
+Flagged moments are reported inside the tactical and opposition reports where
+they are relevant, rather than as a separate document. Pass-sequence data still
+drives the build-up metrics in `deep_skill_metrics.json`; it is no longer
+published as a standalone network report.
 
 The pipeline runs in tiers. All windows are scanned at 1fps with a single agent.
 Only low-confidence frames and event windows receive additional passes.
@@ -100,9 +103,7 @@ only that window -- all other windows are already saved.
 ├-- deep_skill_metrics.json                   ← Step 3k: performance metrics derived from findings
 ├-- job_log.json                              ← Runtime and cost metrics for this job
 ├-- tactical_report.md
-├-- opposition_report_[team].md
-├-- flagged_moments.md
-└-- pass_network.md
+└-- opposition_report_[team].md
 ```
 
 ---
@@ -3996,6 +3997,27 @@ Draw from: formation_history, pressing_by_window, line_height_by_window,
 key_moments (goals, subs, notable shifts). Minimum 5 phases, maximum 10.
 One sentence per phase -- no coaching commentary.
 
+### Flagged moments
+
+Flagged moments are reported here and inside the analysis sections they bear
+on -- there is no separate flagged-moments document.
+
+Read `flagged_moments` and `key_moments` from `running_summary.json`. For each:
+
+1. Place it in the phase table above if it defines the phase (goal, red card,
+   decisive substitution, tactical shift).
+2. Otherwise attach it to the section it evidences -- a defensive-line moment
+   belongs in Out of Possession, a build-up moment in In Possession -- cited
+   inline with its timestamp, e.g. "(38:00)".
+3. Drop it if it evidences nothing in the report. Do not list moments for
+   their own sake; relevance is the test, not volume.
+
+Deduplicate by timestamp +/- 30 seconds before writing.
+
+Timestamps and confidence carry over unchanged from the source record. A moment
+whose timestamp is absent is written without one rather than with an estimated
+value -- never infer a time from surrounding moments.
+
 ---
 
 ## 3. Formation and Shape
@@ -4339,6 +4361,14 @@ Draw ONLY from findings[] where analysis_scope is "opposition".
 Include findings from all result families. For downgraded families,
 include the limitations_note inline.
 
+FLAGGED MOMENTS: there is no separate flagged-moments document. Fold
+flagged_moments and key_moments from running_summary.json into the sections
+they evidence, cited inline with their timestamp, e.g. "(38:00)". Include a
+moment only where it supports a scouting point about this opponent -- relevance
+is the test, not volume. Deduplicate by timestamp +/- 30 seconds. Carry
+timestamps over unchanged; write a moment without a timestamp rather than
+estimating one.
+
 DATA FILES:
 - running_summary.json    -- individual_observations, key_moments, flagged_moments,
                             set_pieces, shots_against, match_state_by_window
@@ -4647,129 +4677,6 @@ State concisely. One line per item.
 Output as markdown. No preamble before the first heading. Past tense throughout.
 ```
 
-### 4c -- Flagged Moments prompt
-
-Send this prompt to generate `flagged_moments.md`.
-
-```
-You are compiling the flagged moments report from a football match analysis.
-Follow every rule in the MATCH LENS REPORT CONSTRAINTS block.
-
-DATA FILES:
-- running_summary.json    -- flagged_moments, key_moments, confirmation_queue results
-
-SOURCE TYPE:       [source_type]
-SOURCE LIMITATION: [source_limitations_note]
-PLAYER ID CEILING: [player_id_ceiling]
-
-Instructions:
-1. Pull all entries from flagged_moments and key_moments in running_summary.json
-2. Deduplicate by timestamp ± 30 seconds
-3. Keep only moments where confidence is "high" or "medium"
-4. Sort chronologically
-5. For moments from downgraded families: include them with their limitations_note
-6. If a moment was in confirmation_queue and resolved: use evidence_tier "escalated_confirmation"
-7. Target 10-20 moments. If fewer high/medium confidence moments exist, report what is there.
-
-For each moment, state:
-- What happened (description only, past tense)
-- Result family it belongs to
-- Evidence tier (direct / repeated_pattern / escalated_confirmation)
-- Confidence level
-- Source limitation if result_family was downgraded
-- Do NOT state why it is tactically significant -- that is coaching interpretation
-
-Output format (markdown):
-
-## Moment [N]: [Title]
-**Timestamp:** [MMmSSs]
-**Team:** [home team name / away team name]
-**Result family:** [result_family]
-**Evidence tier:** [direct / repeated_pattern / escalated_confirmation]
-**Confidence:** [high / medium]
-[If downgraded: **Source note:** [limitations_note]]
-**What happened:** [description in past tense -- no opinion, no evaluation]
-**Key frames:** frame_XXmYYs.jpg[, frame_XXmYYs.jpg]
-
----
-Output as markdown. No preamble before the first heading.
-```
-
-### 4d -- Pass Network Report prompt
-
-Send this prompt to generate `pass_network.md`.
-
-```
-You are writing a pass network report from football match analysis.
-Follow every rule in the MATCH LENS REPORT CONSTRAINTS block.
-
-DATA FILES:
-- pass_sequences.json     -- all pass chains from the match
-- deep_skill_metrics.json -- pattern_reliability_score and build_up_route_diversity
-
-SOURCE TYPE:       [source_type]
-SOURCE LIMITATION: [source_limitations_note]
-PLAYER ID CEILING: [player_id_ceiling]
-
-If all build_up findings are low-confidence from source limitations:
-  state "Pass network analysis was limited -- [source_limitations_note]"
-  and produce what is available with appropriate caveats.
-
-If build_up is downgraded: produce the report but prefix with:
-  "Pass network findings are approximate -- [source_limitations_note]."
-
-Instructions:
-Read pass_sequences.json. Group sequences by player involvement.
-Produce all seven sections below in order.
-State all counts as facts (they are direct structured data).
-Do not interpret why routes are used -- describe what was used and how often.
-
----
-# Pass Network: [Home] vs [Away]
-[If build_up downgraded: include source caveat here]
-
-## 1. Node Map
-For each player appearing in pass chains:
-- Total involvements (passes sent + received)
-- Top 3 players they received from (with count)
-- Top 3 players they passed to (with count)
-Sort by total involvements descending.
-Use player_id_ceiling for name format.
-
-## 2. Most Used Routes
-Top 10 player-to-player combinations by frequency.
-Format: [Player A] -> [Player B]: [N] times
-
-## 3. Progressive Routes
-All sequences where progressive: true.
-Group by zone channel: left (zone_start or zone_end includes left) /
-central / right.
-State total count per channel.
-
-## 4. Dead End Patterns
-All sequences ending in lost_possession or clearance.
-Identify which player-to-player links most commonly precede dead ends.
-State counts only -- no interpretation.
-
-## 5. Threat Sequences
-All sequences ending in shot or cross.
-For each: state the full chain, zone_start, zone_end, sequence length.
-State average sequence length before threat.
-
-## 6. Bypassed Players
-Players in the lineup (from match_config.json) who appear in fewer than
-3 pass sequences total. List them with their involvement count.
-
-## 7. First Half vs Second Half
-Compare pass network shape for windows in first half vs second half.
-Use pattern_reliability_score and build_up_route_diversity from
-deep_skill_metrics.json if not suppressed.
-State whether the most common route changed between halves.
-
----
-Output as markdown. No preamble before the first heading.
-```
-
 ---
 
 ## Step 5 -- Word Conversion
@@ -4843,7 +4750,7 @@ Converts all four `.md` files to `.docx`.
 | Line height calibration drifts | Re-anchor to penalty box edge (16%) in prompt |
 | Formation inconsistent across windows | Use agent_01 merged as baseline; flag only if 2+ consecutive windows agree on change |
 | running_summary.json missing a window | Re-run update_running_summary for that merged file |
-| Duplicate flagged moments | Deduplicate by timestamp ± 30 seconds before writing flagged_moments.md |
+| Duplicate flagged moments | Deduplicate by timestamp ± 30 seconds when writing the moments into the tactical report |
 | confirmation_queue empty but GK/cross events present | Check agent prompt includes confirmation_queue in schema |
 | Confirmation segment too short to resolve event | Increase window_seconds in extract_segment() |
 | Event still ambiguous after 3fps re-extraction | Re-extract at 5fps; if still unclear, use softest wording tier |

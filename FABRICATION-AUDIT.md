@@ -37,6 +37,7 @@ components contributed.
 | F4 | `deep_skill_metrics.py` `calc_compactness` | Returned **0.0** when the defensive line was never read, publishing "maximally expansive". Now `None`. |
 | F5 | `deep_skill_metrics.py` `calc_momentum_by_window` | Substituted **0.5** for absent press/line-height, contributing up to 55% of the momentum figure as invention. Now renormalises over measured components; each component reports `None` when unobserved. |
 | F6 | `deep_skill_metrics.py` `calc_build_up_effectiveness` | Returned **0.0** rates with zero sequences, published as *"0% of sequences reached the final third"* — a verdict on play never watched. Now `None` + explicit unavailable summary. |
+| F8 | `generate_flagged_moments.py` (deleted) | Defaulted `source_type` to the literal `"broadcast_fixed_wide"` and printed it as fact in the report footer, contradicting the runner's `"veo_ball_tracking"` default for the same field. **Resolved by removing the report entirely** — flagged moments are now folded into the tactical and opposition reports. |
 | F7 | `deep_skill_metrics.py` `calculation_basis` | Published formulas the code did not implement (`60/40` while computing `80/20`; `/12` while dividing by `4`). Basis strings are now generated from the same constants the arithmetic uses. |
 
 Each is covered by a regression test in `tests/test_audit_fixes.py`, and each
@@ -53,7 +54,6 @@ These were confirmed against the code during the audit and are **not yet fixed**
 |---|---|---|---|
 | O1 | `build_readiness_check.py:133` | `suppressed_families = []` is hardcoded with the comment "no suppressed families in this pipeline", while `source_profiler.py:165` computes real suppression state. | `report_readiness.json` **and** `confidence_reliability_report.json` — the artefact whose entire job is stating what could not be measured asserts nothing was suppressed. |
 | O2 | `build_readiness_check.py:79-83` | With no operator event list the `known_events` loop never runs, giving `events_checked=0, missed=0`, which sets `event_validation_passed: true`. | Terminal prints "All events accounted for"; the readiness file records validation as passed when nothing was checked. |
-| O3 | `generate_flagged_moments.py:146` | `source_type` defaults to the literal `"broadcast_fixed_wide"` and is printed as fact in the report footer; a template limitation sentence is substituted when the real note is empty. | `flagged_moments.md`, delivered to the club, stating a footage type that was never determined. `pipeline_runner_v2.py:2927` defaults the *same* field to `"veo_ball_tracking"` — the two contradict, so at most one can be right. |
 | O4 | `validation/compare_counter1.py:134-144` | `claimed_count` is hardcoded `0` and the finding string hardcodes `"CARDS -- 5 real, 0 claimed"` regardless of input — a fixture-specific value emitted as a measurement. | `counter1_result.json` |
 | O5 | `validation/compare_counter1.py:176` | `re.match` fails on the `W02_1H_05-10min` label form, so every window is scored against a fabricated `"level"` truth, and every window the pipeline labelled `level` counts as agreeing. | Prints "22/22 windows agree with true score timeline". |
 | O6 | `accumulator.py:518` + `PITCH_LENGTH_M` | Pitch length is assumed **105 m**; `_pct_to_m(pct, pitch=105.0)` is never called with a real value, and `pitch_validation.py`'s venue table is empty, so a correctly recorded 100 m pitch still yields metre figures computed at 105 m. | Every line-height metre figure in the reports (~5% overstatement on a 100 m pitch). |
@@ -85,7 +85,7 @@ These were confirmed against the code during the audit and are **not yet fixed**
 
 ## Suggested order
 
-O1, O2, O3 and O17 first: they are the ones that make the *reliability report* —
+O1, O2 and O17 first: they are the ones that make the *reliability report* —
 the artefact whose whole purpose is disclosing limitations — assert that nothing
 was limited. A tool that overstates its own reliability fails at exactly the
 moment its output matters.

@@ -2051,7 +2051,7 @@ def _report_gate_open(match_dir: str, override: bool = False) -> bool:
         print(f"    ... and {len(blocking) - 10} more")
 
     if not override:
-        print("  Skipping 3l_synthesis, PHASE 5 (4a/4b) and PHASE 6 (4c/4d).")
+        print("  Skipping 3l_synthesis and PHASE 5 (4a/4b).")
         print("  Fix the blocking issues and re-run, or pass --override-readiness")
         print("  to generate reports anyway (they will be explicitly untrustworthy).")
         print("  " + "=" * 70)
@@ -2787,9 +2787,8 @@ def run_pipeline(match_dir: str, quality: str = "standard",
     # Until now nothing read the flag anywhere in the codebase: _run_python_steps
     # discards build_readiness_check()'s return value, so report_ready was
     # computed, printed and ignored, and every report stage ran regardless of it.
-    # All three report producers are gated here: 3l_synthesis (which writes
-    # tactical_report.md and the opposition reports), PHASE 5 (4a/4b) and PHASE 6
-    # (4c/4d).
+    # Both report producers are gated here: 3l_synthesis (which writes
+    # tactical_report.md and the opposition reports) and PHASE 5 (4a/4b).
     _reports_allowed = _report_gate_open(match_dir, override=override_readiness)
 
     if _reports_allowed:
@@ -2860,57 +2859,6 @@ def run_pipeline(match_dir: str, quality: str = "standard",
             except Exception as e:
                 mark_step(match_dir, state, "4b_opposition_report", "failed", str(e))
                 print(f"  [FAIL] opposition report: {e}")
-
-    # ── PHASE 6: Step 4c flagged_moments + 4d pass_network ──────────────────
-    import subprocess as _sp
-
-    def _run_generator(script_name: str, match_dir: str,
-                       step_key: str, state: dict) -> bool:
-        if is_step_done(state, step_key):
-            print(f"  - {step_key} (already complete, skipping)")
-            return True
-
-        scripts_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(scripts_dir, script_name)
-
-        if not os.path.exists(script_path):
-            print(f"  [WARN] {script_name} not found in scripts dir — skipping {step_key}")
-            return False
-
-        print(f"  - {step_key}...")
-        result = _sp.run(
-            [sys.executable, script_path, match_dir],
-            capture_output=True, text=True
-        )
-        if result.returncode == 0:
-            mark_step(match_dir, state, step_key, "complete")
-            if result.stdout.strip():
-                print(result.stdout.rstrip())
-            print(f"  [OK] {step_key}")
-            return True
-        else:
-            err = (result.stderr.strip().splitlines()[-1]
-                   if result.stderr.strip() else "unknown error")
-            print(f"  [WARN] {step_key} failed: {err}")
-            mark_step(match_dir, state, step_key, "failed", err)
-            return False
-
-    if not _reports_allowed:
-        # A1: gate closed. flagged_moments.md and pass_network.md are delivered
-        # artefacts too, so they are gated on the same condition as 4a/4b.
-        print("\n  PHASE 6: skipped — report gate closed (see REPORT GATE above).")
-    else:
-        print(f"\n  PHASE 6: Step 4c/4d — Flagged moments + Pass network")
-
-        _run_generator("generate_flagged_moments.py", match_dir,
-                       "4c_flagged_moments", state)
-
-        _pass_seq = os.path.join(match_dir, "pass_sequences.json")
-        if os.path.exists(_pass_seq):
-            _run_generator("generate_pass_network.py", match_dir,
-                           "4d_pass_network", state)
-        else:
-            print("  - 4d_pass_network (skipped — pass_sequences.json not found)")
 
     print_progress(state)
     print(f"\n  Pipeline complete. Reports in {match_dir}")
@@ -3298,8 +3246,7 @@ if __name__ == "__main__":
                          "3h_ground_truth","3i_escalation",
                          "3i_player_escalation","3j_readiness",
                          "3k_metrics","3k2_player_cards","3l_synthesis",
-                         "4a_tactical_report","4b_opposition_report",
-                         "4c_flagged_moments","4d_pass_network"]:
+                         "4a_tactical_report","4b_opposition_report"]:
                 state["steps"][step] = "pending"
                 print(f"  Reset: {step}")
             # Also reset failed event windows to skipped so merge proceeds
@@ -3327,27 +3274,23 @@ if __name__ == "__main__":
                          "3h_ground_truth","3i_escalation",
                          "3i_player_escalation","3j_readiness",
                          "3k_metrics","3k2_player_cards","3l_synthesis",
-                         "4a_tactical_report","4b_opposition_report",
-                         "4c_flagged_moments","4d_pass_network"]:
+                         "4a_tactical_report","4b_opposition_report"]:
                 state["steps"][step] = "pending"
             from pipeline_state import _save as _ps_save_s
             _ps_save_s(args.match_dir, state)
             print(f"  Reset: all {len(state['windows'])} windows → 3a + 3b + "
-                  f"3i_player_action pending, 3e–4d reset. Re-running from "
+                  f"3i_player_action pending, 3e–4b reset. Re-running from "
                   f"structural pass...")
         elif args.force_reports:
             # Prefer re-running 3l_synthesis (richer agent) when it has run before.
             # Fall back to legacy 4a/4b only when 3l never produced output.
             if state["steps"].get("3l_synthesis") == "complete":
                 state["steps"]["3l_synthesis"] = "pending"
-                for step in ["4c_flagged_moments", "4d_pass_network"]:
-                    state["steps"][step] = "pending"
-                print("  Reset: 3l_synthesis + 4c/4d (preferred report path)")
+                print("  Reset: 3l_synthesis (preferred report path)")
             else:
-                for step in ["4a_tactical_report","4b_opposition_report",
-                             "4c_flagged_moments","4d_pass_network"]:
+                for step in ["4a_tactical_report", "4b_opposition_report"]:
                     state["steps"][step] = "pending"
-                print("  Reset: 4a/4b + 4c/4d (3l_synthesis unavailable)")
+                print("  Reset: 4a/4b (3l_synthesis unavailable)")
             from pipeline_state import _save as _ps_save
             _ps_save(args.match_dir, state)
             print("  Reports reset to pending. Re-running...")

@@ -332,8 +332,6 @@ def convert_report(md_path: str, docx_path: str,
 REPORT_FILES = [
     "tactical_report.md",
     "opposition_report_*.md",
-    "flagged_moments.md",
-    "pass_network.md",
 ]
 
 

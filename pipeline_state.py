@@ -71,7 +71,6 @@ PIPELINE_STEPS = [
     "3k2_player_cards",
     "3l_synthesis",
     "4a_tactical_report", "4b_opposition_report",
-    "4c_flagged_moments", "4d_pass_network",
 ]
 # Note: 3i_player_action (per-window) is intentionally NOT added to
 # WINDOW_STEPS at this time. The player-action confirmation loop is

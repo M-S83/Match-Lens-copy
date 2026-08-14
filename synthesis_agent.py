@@ -1,4 +1,4 @@
-"""
+r"""
 Match Lens — Synthesis Agent (Step 3l)
 Reads all accumulated pipeline outputs and produces:
   - tactical_report.md      (both teams, match as it happened)
@@ -666,7 +666,6 @@ OPTIONAL_FILES = [
     "deep_skill_metrics.json",
     "ground_truth_check.json",
     "shots_log.json",
-    "flagged_moments.md",
     "report_readiness.json",
     # v3 Step 7: player_summary_cards.json -- per-player cards built by
     # player_aggregator (Step 9 of porting plan). On pre-v3 runs and
@@ -792,16 +791,28 @@ def build_input_bundle(match_dir: str) -> dict:
             print(f"  [WARN] Optional file missing — "
                   f"related findings will be empty: {fname}")
 
+    running_summary = _load_json(os.path.join(match_dir, "running_summary.json"))
+
     return {
         "match_config":       _load_json(os.path.join(match_dir, "match_config.json")),
         "window_plan":        _load_json(os.path.join(match_dir, "window_plan.json")),
-        "running_summary":    _load_json(os.path.join(match_dir, "running_summary.json")),
+        "running_summary":    running_summary,
         "pass_sequences":     _load_json(os.path.join(match_dir, "pass_sequences.json")),
         "deep_skill_metrics": _clean_metrics(
             _load_json(os.path.join(match_dir, "deep_skill_metrics.json"))),
         "ground_truth_check": _load_json(os.path.join(match_dir, "ground_truth_check.json")),
         "shots_log":          _load_json(os.path.join(match_dir, "shots_log.json")),
-        "flagged_moments":    _load_text(os.path.join(match_dir, "flagged_moments.md")),
+        # Flagged moments are now folded into the tactical and opposition
+        # reports rather than published as a separate flagged_moments.md, so
+        # they come from running_summary directly as structured records.
+        #
+        # This also fixes a latent ordering bug: this function previously read
+        # the rendered flagged_moments.md, but 3l_synthesis runs BEFORE the
+        # phase that generated that file, so on a first run it always loaded ""
+        # and the reports saw no flagged moments at all. They only ever
+        # appeared if a previous run had left the file behind.
+        "flagged_moments":    (running_summary or {}).get("flagged_moments", []),
+        "key_moments":        (running_summary or {}).get("key_moments", []),
         "report_readiness":   _load_json(os.path.join(match_dir, "report_readiness.json")),
         # v3 Step 7: player_summary_cards surfaced under a stable key.
         # Empty dict on absence (graceful-degradation contract); the

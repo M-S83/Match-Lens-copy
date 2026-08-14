@@ -344,3 +344,46 @@ def test_nofab_build_up_rates_still_compute_with_real_sequences():
         calc_build_up_effectiveness({"sequences": seqs})
     assert total == 2 and prog == 1 and threats == 1
     assert prog_rate == 0.5 and ft_rate == 0.5 and conv_rate == 0.5
+
+
+# ── Removed deliverables: flagged_moments.md / pass_network.md ───────────────
+#
+# Folded into the tactical and opposition reports. These guard against the
+# generators or their pipeline steps being reintroduced by a later merge.
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def test_removed_generators_are_gone():
+    for name in ("generate_flagged_moments.py", "generate_pass_network.py"):
+        assert not os.path.exists(os.path.join(REPO, name)), f"{name} is back"
+
+
+def test_removed_pipeline_steps_are_unregistered():
+    for mod in ("pipeline_state.py", "pipeline_runner_v2.py", "md_to_docx.py"):
+        src = open(os.path.join(REPO, mod), encoding="utf-8").read()
+        for token in ("4c_flagged_moments", "4d_pass_network"):
+            assert token not in src, f"{token} still registered in {mod}"
+
+
+def test_synthesis_takes_moments_from_running_summary_not_a_rendered_file():
+    """3l_synthesis ran BEFORE the phase that wrote flagged_moments.md, so the
+    old _load_text always returned "". Moments now come from structured data."""
+    import synthesis_agent as sa
+    src = open(sa.__file__, encoding="utf-8").read()
+    assert '_load_text(os.path.join(match_dir, "flagged_moments.md"))' not in src
+    assert '"flagged_moments.md"' not in src.split("OPTIONAL_FILES")[1][:400]
+
+
+def test_synthesis_bundle_exposes_moments_from_the_summary(tmp_path):
+    import synthesis_agent as sa
+    for name, payload in (
+        ("match_config.json", {"home_team": "A", "away_team": "B"}),
+        ("running_summary.json", {"flagged_moments": [{"minute": "38:00"}],
+                                  "key_moments": [{"minute": "12:00"}]}),
+        ("pass_sequences.json", {"sequences": []}),
+    ):
+        (tmp_path / name).write_text(json.dumps(payload))
+    bundle = sa.build_input_bundle(str(tmp_path))
+    assert bundle["flagged_moments"] == [{"minute": "38:00"}]
+    assert bundle["key_moments"] == [{"minute": "12:00"}]

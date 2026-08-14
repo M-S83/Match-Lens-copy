@@ -416,3 +416,45 @@ def test_spec_has_no_machine_specific_paths():
     spec = open(os.path.join(REPO, "SKILL.md"), encoding="utf-8").read()
     for bad in ("C:\\Users", "/Users/", "AppData\\Local"):
         assert bad not in spec, f"machine-specific path back in SKILL.md: {bad}"
+
+
+# ── Project skills live in the repo, and the spec has one authoritative copy ──
+
+SKILLS = os.path.join(REPO, ".claude", "skills")
+
+
+def test_required_skills_are_present_in_the_repo():
+    for name in ("match-analysis", "matchlens-tactical-report",
+                 "matchlens-opposition-report"):
+        assert os.path.isdir(os.path.join(SKILLS, name)), f"missing skill: {name}"
+
+
+def test_skill_spec_matches_repo_spec():
+    """SKILL.md at the repo root is authoritative. The copy under
+    .claude/skills/match-analysis/ exists only because a skill directory must
+    contain its own SKILL.md. They had already drifted by 38 lines when the two
+    copies lived in separate stores; this makes that impossible to repeat.
+
+    To fix a failure here, re-sync from the root file (see .claude/skills/README.md).
+    """
+    root = open(os.path.join(REPO, "SKILL.md"), encoding="utf-8").read()
+    copy = open(os.path.join(SKILLS, "match-analysis", "SKILL.md"),
+                encoding="utf-8").read()
+    assert root == copy, (
+        "SKILL.md and .claude/skills/match-analysis/SKILL.md have diverged; "
+        "re-sync from the repo root copy")
+
+
+def test_report_skills_keep_their_own_assets():
+    """render.py resolves assets as <skill_dir>/assets, so each skill must keep
+    its own copy. Deduplicating into a shared directory would break it."""
+    for name in ("matchlens-tactical-report", "matchlens-opposition-report"):
+        for sub in ("assets/brand.css", "assets/fonts", "scripts/render.py"):
+            assert os.path.exists(os.path.join(SKILLS, name, sub)), \
+                f"{name} is missing {sub}"
+
+
+def test_no_compiled_artifacts_committed_under_skills():
+    for root_dir, dirs, files in os.walk(SKILLS):
+        assert "__pycache__" not in dirs, f"__pycache__ under {root_dir}"
+        assert not [f for f in files if f.endswith(".pyc")], f".pyc under {root_dir}"

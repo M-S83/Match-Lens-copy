@@ -1,0 +1,12 @@
+# Optional: branded PDF rendering for the report skills in .claude/skills/.
+#
+# Kept out of requirements.txt because WeasyPrint needs system libraries
+# (cairo, pango, gdk-pixbuf) that pip cannot install, and the core pipeline
+# does not use it -- the skills' render.py imports it lazily inside the
+# function that produces the PDF, so everything else works without it.
+#
+# Install only if you want branded PDFs:  pip install -r requirements-reports.txt
+# See https://doc.courtbouillon.org/weasyprint/stable/first_steps.html for the
+# platform-specific system packages.
+
+weasyprint>=60.0

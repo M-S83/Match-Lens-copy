@@ -30,9 +30,12 @@ inp = d.get("tool_input") or {}
 print(inp.get("file_path") or inp.get("notebook_path") or "")
 ' 2>/dev/null)"
 
+# SKILL.md is included because the spec has an authoritative root copy and a
+# generated copy under .claude/skills/match-analysis/; the suite fails if they
+# diverge, so editing the spec must run the tests too.
 case "$edited" in
-  *.py) ;;
-  *) exit 0 ;;                       # not Python — nothing to do
+  *.py|*SKILL.md) ;;
+  *) exit 0 ;;                       # nothing test-relevant changed
 esac
 
 command -v python3 >/dev/null 2>&1 || exit 0

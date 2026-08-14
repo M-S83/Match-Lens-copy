@@ -236,3 +236,31 @@ would have produced `advanced_tactical_report.md` and two
 
 **The deliverable set is now exactly three documents:** `tactical_report.md`
 plus one `opposition_report_<team>.md` per team.
+
+## Project skills (2026-08)
+
+The Match Lens skills now live in `.claude/skills/` inside this repository
+rather than in an account-level synced store:
+
+| Skill | Purpose |
+|---|---|
+| `match-analysis/` | the pipeline spec (generated copy of the root `SKILL.md`) |
+| `matchlens-tactical-report/` | branded PDF of `tactical_report.md` |
+| `matchlens-opposition-report/` | branded PDF of `opposition_report_<team>.md` |
+
+**Why.** The spec previously existed in two places with no link between them and
+had already diverged — the synced copy was missing the entire Pipeline
+Invariants section (38 lines), and both carried a Step 5 command pointing into
+one developer's home directory. Every spec fix landed in the repo copy, never in
+the one that ran. Keeping the skills here means one commit changes spec, code and
+tests together.
+
+`SKILL.md` at the repo root is authoritative;
+`.claude/skills/match-analysis/SKILL.md` is a copy that exists only because a
+skill directory must contain one. `test_skill_spec_matches_repo_spec` fails if
+they diverge, and the PostToolUse hook runs the suite on `SKILL.md` edits as well
+as `.py` edits. See `.claude/skills/README.md` for the re-sync command.
+
+Two skills were dropped rather than moved: `matchlens-flagged-moments` and
+`matchlens-pass-network`, matching the removal of those two report types from
+the pipeline.

@@ -40,10 +40,18 @@ components contributed.
 | F8 | `generate_flagged_moments.py` (deleted) | Defaulted `source_type` to the literal `"broadcast_fixed_wide"` and printed it as fact in the report footer, contradicting the runner's `"veo_ball_tracking"` default for the same field. **Resolved by removing the report entirely** — flagged moments are now folded into the tactical and opposition reports. |
 | F9 | `cost_estimator.py` `print_estimate` | Priced a match against **zero windows** on a cold directory, because every per-window cost scales with `total_windows` from `window_plan.json`. Printed ~$0.73 against a real $8.75 for the same video — a 12x understatement that exited 0 and read as success, then persisted it to `cost_estimate.json`. Now refuses: `ESTIMATE UNAVAILABLE`, exit 2, `estimate_available: false`. **Found by a dry run on real footage, not by static analysis.** |
 | F7 | `deep_skill_metrics.py` `calculation_basis` | Published formulas the code did not implement (`60/40` while computing `80/20`; `/12` while dividing by `4`). Basis strings are now generated from the same constants the arithmetic uses. |
+| F10 | `window_plan.py` Step 1c container read | Printed **"Container: clean -- no boundary snapping needed"** when the container analysis had *failed*. It read `boundary_timestamps_s` with a `[]` default, and an error profile carries no such key, so a container nobody could analyse was reported as verified clean — absent input rendered as a legitimate negative finding. Now distinguishes analysed-and-clean, analysed-with-joins, and not-analysed; only the first may claim "clean". **Found by running the pipeline head end to end, not by static analysis.** |
 
-Each is covered by a regression test in `tests/test_audit_fixes.py`, and each
-test was mutation-checked — the defect was reintroduced and the suite confirmed
-to fail.
+Each is covered by a regression test (`tests/test_audit_fixes.py`,
+`tests/test_pipeline_head.py`), and each test was mutation-checked — the defect
+was reintroduced and the suite confirmed to fail.
+
+**Note on how F9 and F10 were found.** Both are in the same class: a step
+computing a confident result from inputs that did not exist, on a *cold* match
+directory. Neither was visible to six sessions of reading, because reading
+tends to assume the happy path has already run. Both surfaced within minutes of
+executing the pipeline from a bare directory. That is the cheapest known way to
+find this category, and it is worth repeating on any new step.
 
 ---
 

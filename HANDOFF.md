@@ -7,6 +7,15 @@ other session would otherwise have to guess at.
 
 Keep it short. A file that is actually maintained beats a process document.
 
+**Nothing in this file may state something that invalidates itself on write.**
+The first version pinned the commit hash at the top; it was wrong the instant it
+was committed, because the commit that updates the hash becomes the new hash. It
+also contradicted rule 3 below — a written state claim placed where it invites
+exactly the trust the protocol forbids, so a session that read the table and
+skipped the command would have *followed the file and broken the protocol*.
+Fields that change with every commit belong in a command, not in a committed
+file.
+
 ---
 
 ## Current state
@@ -14,7 +23,7 @@ Keep it short. A file that is actually maintained beats a process document.
 | | |
 |---|---|
 | **Repo** | `M-S83/Match-Lens-copy` — branch `claude/repo-duplication-gi8ood` |
-| **Head** | `5f0960a` |
+| **Head** | `git ls-remote --heads https://github.com/M-S83/Match-Lens-copy.git` — **never trust a hash written here** (rule 3) |
 | **Tests** | 45 passing, each mutation-checked |
 | **Fabrications** | 9 fixed (F1–F9), 16 open (O1–O17 less those closed) |
 | **Blocking the run** | nothing |
@@ -48,7 +57,16 @@ Cowork runs something and finds a defect
 ```
 
 Both rounds produced real findings that six sessions of reading had missed
-(F9, and the ffprobe guard). Neither would have come from static analysis.
+(F9, and the ffprobe guard).
+
+**Neither half was sufficient on its own, and that is the point.** In both
+rounds the *finding* came from execution and the *diagnosis* came from reading.
+Cowork could demonstrate that `--estimate-only` printed $0.73 but not why
+`wp = {}` propagated into every per-window cost; static analysis had that code
+in view for six sessions without noticing it mattered. So neither session should
+treat the other as a reporting channel — the execution side is not a test
+harness that emits tickets, and the reading side is not a fix service. The
+finding and the explanation are different work, and both rounds needed both.
 
 ---
 
@@ -65,6 +83,13 @@ Each of these was learned the expensive way in this project.
 2. **Label how you know.** Claims from *executing* something have held
    consistently in this project; claims from *reasoning about state* have not.
    Say which you are giving, so the other session knows how hard to check it.
+
+   But labelling is a service to the reader, not a safeguard for the writer.
+   The session that concluded this work was lost labelled its claim correctly as
+   inference and was still wrong. The failure was not mislabelling — it was not
+   noticing that a one-command check existed. So: **before asserting anything
+   about state, ask whether a single command would settle it.** If one would,
+   run it. That question catches what careful labelling does not.
 
 3. **Push by explicit URL.** `origin` was silently reset to the original repo
    five times in one session. Any "N unpushed commits" warning is unverified

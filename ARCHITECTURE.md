@@ -264,3 +264,28 @@ as `.py` edits. See `.claude/skills/README.md` for the re-sync command.
 Two skills were dropped rather than moved: `matchlens-flagged-moments` and
 `matchlens-pass-network`, matching the removal of those two report types from
 the pipeline.
+
+## Repository provenance — read this before trusting a "the repo is missing X" report
+
+**This repository is `M-S83/Match-Lens-copy`.** The active branch is
+`claude/repo-duplication-gi8ood`. It is a full duplicate of `M-S83/Match-Lens`
+plus all subsequent work: the audits, the fixes, the test suite and the project
+skills. `M-S83/Match-Lens` is the original and is deliberately frozen at
+`b5cc6de` — it does not receive changes.
+
+Two sessions have now been misled by this, in the same way and at real cost:
+
+- **`origin` does not stay pointed here.** In the cloud container it was reset to
+  the original five times mid-session. Every push in this repo's history was made
+  by explicit URL for that reason. Check `git remote -v` before pushing, and
+  treat any "N unpushed commits" warning as unverified until you have compared
+  local `HEAD` against `git ls-remote` for the **copy**.
+- **A session handed "the copy" checked `Match-Lens`, found the work absent, and
+  concluded it was lost.** Nothing was lost. One `git ls-remote` against the
+  `-copy` name would have settled it in a single command.
+
+The second is the more instructive failure, and it was not bad reasoning about
+the evidence — it was not noticing that a cheap check existed. "The repo" reads
+as a settled referent rather than a thing to verify, so the inference does not
+feel like an inference. When a report contradicts a known-good state, **verify
+the identity of what was inspected before arguing about its contents.**

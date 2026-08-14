@@ -151,8 +151,6 @@ re-consolidation step for already-resolved items.
 ```python
 import cv2, os
 
-PYTHON = r"C:\Users\dbmux\AppData\Local\Programs\Python\Python313\python.exe"
-
 video = r"[MATCH_DIR]\[VIDEO_FILE].mp4"
 out_dir = r"[MATCH_DIR]\frames"
 os.makedirs(out_dir, exist_ok=True)
@@ -4682,11 +4680,15 @@ Output as markdown. No preamble before the first heading. Past tense throughout.
 ## Step 5 -- Word Conversion
 
 ```bash
-PYTHON="C:\Users\dbmux\AppData\Local\Programs\Python\Python313\python.exe"
-$PYTHON "C:\Users\dbmux\.claude\skills\match-analysis\scripts\md_to_docx.py" "[MATCH_DIR]"
+python md_to_docx.py "[MATCH_DIR]"
 ```
 
-Converts all four `.md` files to `.docx`.
+Run from the repository root, where `md_to_docx.py` lives. Do not hardcode an
+interpreter path or a machine-specific script location -- earlier revisions
+pointed at `C:\Users\<name>\.claude\skills\match-analysis\scripts\`, which
+does not exist on any current machine.
+
+Converts `tactical_report.md` and each `opposition_report_*.md` to `.docx`.
 
 ---
 

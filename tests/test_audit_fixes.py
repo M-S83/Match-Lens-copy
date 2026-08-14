@@ -406,3 +406,13 @@ def test_docx_conversion_targets_only_the_three_reports():
     import md_to_docx
     assert md_to_docx.REPORT_FILES == ["tactical_report.md",
                                        "opposition_report_*.md"]
+
+
+def test_spec_has_no_machine_specific_paths():
+    """SKILL.md told operators to run a script from
+    C:\\Users\\<name>\\.claude\\skills\\match-analysis\\scripts\\ -- a path that
+    exists on no current machine. F6 was fixed in the code and survived in the
+    spec, because nothing ties the two together."""
+    spec = open(os.path.join(REPO, "SKILL.md"), encoding="utf-8").read()
+    for bad in ("C:\\Users", "/Users/", "AppData\\Local"):
+        assert bad not in spec, f"machine-specific path back in SKILL.md: {bad}"

@@ -112,7 +112,15 @@ def check_ffprobe():
 def check_api_key():
     """Mirror the runner's own search order (pipeline_runner_v2.py:39-41)."""
     print("\nAnthropic API key")
-    searched = [REPO / ".env", REPO.parent / ".env", Path.home() / ".env"]
+    # Deduplicate: when the repo sits directly in the home directory --
+    # C:\Users\<name>\Match-Lens-copy -- REPO.parent and Path.home() are the
+    # same path, and the list printed it twice.
+    searched, _seen = [], set()
+    for _p in (REPO / ".env", REPO.parent / ".env", Path.home() / ".env"):
+        _r = _p.resolve()
+        if _r not in _seen:
+            _seen.add(_r)
+            searched.append(_p)
     found_env = next((p for p in searched if p.exists()), None)
 
     key = None

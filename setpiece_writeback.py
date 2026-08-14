@@ -19,7 +19,7 @@ Usage:
 import glob
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pipeline_paths import find_merged_window
 from pipeline_schemas import stamp_schema_version
 
@@ -72,7 +72,7 @@ def apply_burst_to_record(record: dict, burst: dict) -> tuple:
         record["burst_rejection_reason"] = rejection
         record["burst_fps"]              = burst.get("burst_fps", 5)
         record["burst_resolved"]         = True
-        record["resolved_at"]            = datetime.utcnow().isoformat() + "Z"
+        record["resolved_at"]            = datetime.now(timezone.utc).isoformat()
         return ["burst_verdict", "burst_rejection_reason"], []
 
     changed = []
@@ -116,7 +116,7 @@ def apply_burst_to_record(record: dict, burst: dict) -> tuple:
     record["source"]         = "1fps_plus_5fps_burst"
     record["corrections"]    = record.get("corrections", []) + corrections_logged
     record["burst_notes"]    = burst.get("burst_notes", "")
-    record["resolved_at"]    = datetime.utcnow().isoformat() + "Z"
+    record["resolved_at"]    = datetime.now(timezone.utc).isoformat()
 
     return changed, corrections_logged
 
@@ -156,7 +156,7 @@ def writeback_burst(burst_path: str, merged_window_path: str, summary_path: str,
                 "anchor_timestamp": anchor_ts,
                 "team":             team,
                 "burst_path":       burst_path,
-                "detected_at":      datetime.utcnow().isoformat() + "Z",
+                "detected_at":      datetime.now(timezone.utc).isoformat(),
             }) + "\n")
         print(f"  [ORPHAN] No matching set_piece for {anchor_ts}/{team} "
               f"in {os.path.basename(merged_window_path)}")
@@ -193,7 +193,7 @@ def writeback_burst(burst_path: str, merged_window_path: str, summary_path: str,
                     and item.get("timestamp") == anchor_ts
                     and item.get("team") == team):
                 item["resolved"]    = True
-                item["resolved_at"] = datetime.utcnow().isoformat() + "Z"
+                item["resolved_at"] = datetime.now(timezone.utc).isoformat()
                 item["resolved_by"] = "3d-SP"
                 break
 

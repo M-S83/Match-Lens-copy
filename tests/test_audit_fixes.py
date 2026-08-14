@@ -578,3 +578,33 @@ def test_check_setup_mirrors_the_runners_env_search_order():
     for token in ('REPO / ".env"', 'REPO.parent / ".env"', 'Path.home() / ".env"'):
         assert token in setup_src, f"preflight missing search path: {token}"
     assert "Path.home()/'.env'" in runner_src or 'Path.home()/".env"' in runner_src
+
+
+def test_check_setup_deduplicates_env_search_paths(tmp_path, monkeypatch, capsys):
+    """On Windows with the repo at C:\\Users\\<name>\\Match-Lens-copy,
+    REPO.parent and Path.home() are the same path and the list printed it
+    twice."""
+    import check_setup
+    monkeypatch.setattr(check_setup, "REPO", tmp_path / "home" / "repo")
+    monkeypatch.setattr(check_setup.Path, "home",
+                        staticmethod(lambda: tmp_path / "home"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    check_setup.check_api_key()
+    listed = [l for l in capsys.readouterr().out.splitlines()
+              if l.strip().endswith(".env")]
+    assert len(listed) == len(set(l.strip() for l in listed)), \
+        f"duplicate paths printed: {listed}"
+
+
+def test_no_deprecated_utcnow_remains():
+    """utcnow() is deprecated from Python 3.12 and returns a NAIVE datetime that
+    the old code labelled 'Z'. The machine running this is on 3.13."""
+    import ast, pathlib
+    for path in pathlib.Path(REPO).rglob("*.py"):
+        if ".venv" in path.parts or "tests" in path.parts:
+            continue
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "utcnow"):
+                pytest.fail(f"datetime.utcnow() at {path.name}:{node.lineno}")

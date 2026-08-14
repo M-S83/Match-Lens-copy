@@ -1,0 +1,366 @@
+{
+ "teams": {
+  "home": {
+   "name": "Bayern Munich",
+   "short": "BAY",
+   "color": "#D7263D",
+   "formation": "4-2-3-1",
+   "lines": [
+    [
+     "GK",
+     [
+      [
+       1,
+       "Neuer"
+      ]
+     ]
+    ],
+    [
+     "DEF",
+     [
+      [
+       27,
+       "Laimer"
+      ],
+      [
+       4,
+       "Tah"
+      ],
+      [
+       2,
+       "Upamecano"
+      ],
+      [
+       24,
+       "Stanišić"
+      ]
+     ]
+    ],
+    [
+     "DM",
+     [
+      [
+       35,
+       "Pavlović"
+      ],
+      [
+       6,
+       "Kimmich"
+      ]
+     ]
+    ],
+    [
+     "ATT",
+     [
+      [
+       23,
+       "Díaz"
+      ],
+      [
+       42,
+       "Musiala"
+      ],
+      [
+       25,
+       "Olise"
+      ]
+     ]
+    ],
+    [
+     "ST",
+     [
+      [
+       9,
+       "Kane"
+      ]
+     ]
+    ]
+   ],
+   "subs": [
+    [
+     22,
+     "Nicolas Jackson"
+    ],
+    [
+     15,
+     "Alphonso Davies"
+    ]
+   ]
+  },
+  "away": {
+   "name": "Paris Saint-Germain",
+   "short": "PSG",
+   "color": "#2D6CDF",
+   "formation": "4-3-3",
+   "lines": [
+    [
+     "GK",
+     [
+      [
+       16,
+       "Safonov"
+      ]
+     ]
+    ],
+    [
+     "DEF",
+     [
+      [
+       25,
+       "Mendes"
+      ],
+      [
+       3,
+       "Pacho"
+      ],
+      [
+       5,
+       "Marquinhos"
+      ],
+      [
+       26,
+       "Zaïre-E."
+      ]
+     ]
+    ],
+    [
+     "MID",
+     [
+      [
+       8,
+       "F. Ruiz"
+      ],
+      [
+       87,
+       "Neves"
+      ],
+      [
+       17,
+       "Vitinha"
+      ]
+     ]
+    ],
+    [
+     "FWD",
+     [
+      [
+       77,
+       "Kvara."
+      ],
+      [
+       10,
+       "Dembélé"
+      ],
+      [
+       18,
+       "Doué"
+      ]
+     ]
+    ]
+   ],
+   "subs": [
+    [
+     29,
+     "Bradley Barcola"
+    ],
+    [
+     15,
+     "Beraldo"
+    ],
+    [
+     21,
+     "Lucas Hernández"
+    ],
+    [
+     22,
+     "Senny Mayulu"
+    ]
+   ]
+  }
+ },
+ "events": [
+  {
+   "t": 3,
+   "mm": "3'",
+   "type": "goal",
+   "team": "away",
+   "who": "Dembélé",
+   "desc": "Dembélé opener from the right channel"
+  },
+  {
+   "t": 43,
+   "mm": "43'",
+   "type": "card",
+   "team": "away",
+   "who": "Mendes",
+   "desc": "Mendes booked"
+  },
+  {
+   "t": 52,
+   "mm": "52'",
+   "type": "card",
+   "team": "away",
+   "who": "Kvaratskhelia",
+   "desc": "Kvaratskhelia booked"
+  },
+  {
+   "t": 68,
+   "mm": "68'",
+   "type": "sub",
+   "team": "away",
+   "who": "Barcola",
+   "desc": "Barcola on for Dembélé"
+  },
+  {
+   "t": 72,
+   "mm": "72'",
+   "type": "sub",
+   "team": "home",
+   "who": "Jackson",
+   "desc": "Jackson on for Musiala"
+  },
+  {
+   "t": 74,
+   "mm": "74'",
+   "type": "card",
+   "team": "home",
+   "who": "Díaz",
+   "desc": "Díaz booked"
+  },
+  {
+   "t": 79,
+   "mm": "79'",
+   "type": "sub",
+   "team": "away",
+   "who": "Beraldo",
+   "desc": "Beraldo & Hernández on"
+  },
+  {
+   "t": 85,
+   "mm": "85'",
+   "type": "sub",
+   "team": "away",
+   "who": "Mayulu",
+   "desc": "Mayulu on for Mendes"
+  },
+  {
+   "t": 94,
+   "mm": "90+4'",
+   "type": "goal",
+   "team": "home",
+   "who": "Kane",
+   "desc": "Kane equaliser from corner pressure"
+  }
+ ],
+ "shots": [
+  {
+   "x": 214,
+   "y": 64,
+   "o": "goal",
+   "team": "away"
+  },
+  {
+   "x": 196,
+   "y": 50,
+   "o": "on",
+   "team": "away"
+  },
+  {
+   "x": 150,
+   "y": 80,
+   "o": "on",
+   "team": "away"
+  },
+  {
+   "x": 126,
+   "y": 108,
+   "o": "off",
+   "team": "away"
+  },
+  {
+   "x": 250,
+   "y": 100,
+   "o": "off",
+   "team": "away"
+  },
+  {
+   "x": 172,
+   "y": 70,
+   "o": "blocked",
+   "team": "away"
+  },
+  {
+   "x": 110,
+   "y": 122,
+   "o": "off",
+   "team": "away"
+  },
+  {
+   "x": 182,
+   "y": 30,
+   "o": "goal",
+   "team": "home"
+  },
+  {
+   "x": 206,
+   "y": 52,
+   "o": "on",
+   "team": "home"
+  },
+  {
+   "x": 160,
+   "y": 58,
+   "o": "on",
+   "team": "home"
+  },
+  {
+   "x": 248,
+   "y": 92,
+   "o": "off",
+   "team": "home"
+  },
+  {
+   "x": 140,
+   "y": 86,
+   "o": "blocked",
+   "team": "home"
+  },
+  {
+   "x": 196,
+   "y": 98,
+   "o": "blocked",
+   "team": "home"
+  },
+  {
+   "x": 120,
+   "y": 116,
+   "o": "off",
+   "team": "home"
+  }
+ ],
+ "report_type": "pass_network",
+ "title": "Bayern Munich vs PSG",
+ "meta": "Generated 6 May 2026 · 68 sequences",
+ "stats": [
+  [
+   "SEQUENCES",
+   "68",
+   1
+  ],
+  [
+   "AVG LEN",
+   "3.7 / 4.1",
+   0
+  ],
+  [
+   "PROGRESSIVE",
+   "85% / 77%",
+   0
+  ],
+  [
+   "RETAINED",
+   "39% / 77%",
+   0
+  ]
+ ]
+}

@@ -459,3 +459,130 @@ def test_contact_sheet_refuses_when_no_frames_exist(tmp_path):
     with pytest.raises(FileNotFoundError):
         build_sheet(str(tmp_path), 0, 9, every=3, cols=2, tile_w=64,
                     out_path=str(tmp_path / "s.png"))
+
+
+# ── set_boundaries: operator-confirmed timestamps, checked before use ────────
+
+def _cfg_dir(tmp_path, frames=7388):
+    import json as _json
+    md = tmp_path / "match"
+    (md / "frames").mkdir(parents=True)
+    (md / "match_config.json").write_text(
+        _json.dumps({"match": "A vs B", "home_team": "A", "away_team": "B"}),
+        encoding="utf-8")
+    # One file per second: at 1fps the frame COUNT is the video duration, so a
+    # sparse fixture would understate it and trip the "ft past the end" check.
+    fd = md / "frames"
+    for s in range(frames):
+        os.close(os.open(str(fd / f"frame_{s//60:02d}m{s%60:02d}s.jpg"),
+                         os.O_CREAT | os.O_WRONLY))
+    return md
+
+
+def test_boundary_check_accepts_a_coherent_match():
+    from set_boundaries import check
+    # 48m half, 15m break, 48m half — an ordinary 90-minute match.
+    assert check(240, 3120, 4020, 6900) == []
+
+
+def test_boundary_check_rejects_the_detector_s_answer():
+    """The values Step 1b proposed: a 2m half-time break and a 65m second half."""
+    from set_boundaries import check
+    failures = check(240, 3105, 3270, 7210)
+    assert failures
+    assert any("HT break" in f for f in failures)
+
+
+def test_boundary_check_rejects_out_of_order_timestamps():
+    from set_boundaries import check
+    failures = check(240, 4020, 3120, 6900)      # ht after ko2
+    assert failures and "not in order" in failures[0]
+    # Ordering is checked first because every duration below it is negative
+    # and would produce a cascade of misleading messages.
+    assert len(failures) == 1
+
+
+def test_boundary_check_catches_ft_past_the_end_of_the_video():
+    from set_boundaries import check
+    failures = check(240, 3120, 4020, 6900, duration_s=6000)
+    assert any("past the end" in f for f in failures)
+
+
+def test_set_boundaries_refuses_to_write_a_failing_set(tmp_path):
+    import json as _json
+    md = _cfg_dir(tmp_path)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "set_boundaries.py"), str(md),
+         "--ko1", "4m00s", "--ht", "51m45s", "--ko2", "54m30s", "--ft", "120m10s"],
+        capture_output=True, text=True)
+    assert r.returncode != 0
+    cfg = _json.loads((md / "match_config.json").read_text(encoding="utf-8"))
+    assert "boundaries_override" not in cfg, (
+        "a failing boundary set was written to match_config.json")
+
+
+def test_set_boundaries_writes_a_clean_set_with_provenance(tmp_path):
+    import json as _json
+    md = _cfg_dir(tmp_path)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "set_boundaries.py"), str(md),
+         "--ko1", "4m00s", "--ht", "52m00s", "--ko2", "67m00s", "--ft", "115m00s"],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    ov = _json.loads((md / "match_config.json").read_text(
+        encoding="utf-8"))["boundaries_override"]
+    assert ov["ko_1h_seconds"] == 240
+    assert ov["ht_whistle_seconds"] == 3120
+    assert ov["ko_2h_seconds"] == 4020
+    assert ov["ft_whistle_seconds"] == 6900
+    # These are operator assertions from reading frames, not detections.
+    assert ov["source"] == "operator"
+    assert "forced" not in ov
+
+
+def test_set_boundaries_force_records_that_checks_failed(tmp_path):
+    """A run that ignored its own checks must stay identifiable afterwards."""
+    import json as _json
+    md = _cfg_dir(tmp_path)
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "set_boundaries.py"), str(md),
+         "--ko1", "4m00s", "--ht", "51m45s", "--ko2", "54m30s",
+         "--ft", "120m10s", "--force"],
+        capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    ov = _json.loads((md / "match_config.json").read_text(
+        encoding="utf-8"))["boundaries_override"]
+    assert ov["forced"] is True
+    assert ov["checks_failed"]
+
+
+def test_set_boundaries_preserves_the_rest_of_the_config(tmp_path):
+    """The override must not clobber lineups, goals or kits."""
+    import json as _json
+    md = _cfg_dir(tmp_path)
+    p = md / "match_config.json"
+    cfg = _json.loads(p.read_text(encoding="utf-8"))
+    cfg["home_kit"] = "green shirts"
+    cfg["goals"] = [{"time": {"elapsed": 6}}]
+    p.write_text(_json.dumps(cfg), encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, os.path.join(REPO, "set_boundaries.py"), str(md),
+         "--ko1", "4m00s", "--ht", "52m00s", "--ko2", "67m00s", "--ft", "115m00s"],
+        capture_output=True, text=True, check=True)
+    after = _json.loads(p.read_text(encoding="utf-8"))
+    assert after["home_kit"] == "green shirts"
+    assert after["goals"] == [{"time": {"elapsed": 6}}]
+
+
+def test_boundaries_override_is_read_before_any_api_client_is_built():
+    """The override path must be free.
+
+    If anthropic.Anthropic() were constructed before the override branch, a
+    run that skips detection would still require credentials, and the branch
+    could not be reached on a machine without them.
+    """
+    src = open(os.path.join(REPO, "detect_boundaries.py"), encoding="utf-8").read()
+    override_at = src.index("boundaries_override")
+    client_at = src.index("anthropic.Anthropic()")
+    assert override_at < client_at

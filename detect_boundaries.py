@@ -438,6 +438,10 @@ def detect_boundaries(match_dir: str, override: bool = False) -> dict:
     # Load match config
     cfg: dict = {}
     match_info = "Unknown match"
+    # Bound before the loop: with neither config present the loop body never
+    # runs, and the boundaries_override read below raised NameError instead of
+    # simply finding no override.
+    cfg = {}
     for p in (os.path.join(match_dir, "match_config.json"),
               os.path.join(match_dir, "match_config_draft.json")):
         if os.path.exists(p):

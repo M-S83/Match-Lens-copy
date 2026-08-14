@@ -65,6 +65,17 @@ Confirm the suite passes before running anything expensive:
 python -m pytest tests\ -q
 ```
 
+Then run the preflight, which checks every prerequisite at once and names
+exactly what is missing — Python version, all six packages, ffprobe, and where
+your API key resolves from:
+
+```bat
+python check_setup.py
+```
+
+It exits 0 when you are ready to run and 1 otherwise, so it is safe to put in
+front of anything.
+
 ---
 
 ## Set up the match directory
@@ -89,6 +100,20 @@ ambiguity disappears.**
 Grays Analysis\                 <- match_dir (video may live elsewhere)
   match_config.json
 ```
+
+`new_match.py` builds this for you, with an absolute `video_path` so the glob is
+never consulted:
+
+```bat
+python new_match.py --video "C:\Users\dbmux\Desktop\Grays Analysis\69ca09036f6e8ccff1207418.mp4" ^
+                    --home "Grays Athletic" --away "Opponent FC" ^
+                    --date 2026-08-09 ^
+                    --dir "C:\Users\dbmux\Desktop\Grays Analysis"
+```
+
+It refuses to overwrite an existing config without `--force`, rejects a video
+path that does not exist, and warns when more than one `.mp4` sits in the match
+directory.
 
 ### match_config.json
 

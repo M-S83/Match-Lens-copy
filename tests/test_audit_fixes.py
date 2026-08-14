@@ -527,3 +527,54 @@ def test_hsv_saturation_does_not_divide_by_zero(recwarn):
     src = open(fp.__file__, encoding="utf-8").read()
     assert "np.where(mx > 0, diff / mx, 0)" not in src
     assert "np.divide(diff, mx" in src
+
+
+# ── Setup helpers ────────────────────────────────────────────────────────────
+
+def test_new_match_writes_absolute_video_path(tmp_path):
+    """video_path must be absolute so the video can live outside the match dir
+    and the largest-file glob is never consulted."""
+    import subprocess, sys as _s
+    vid = tmp_path / "match.mp4"; vid.write_bytes(b"x" * 1024)
+    mdir = tmp_path / "Match Dir"
+    r = subprocess.run([_s.executable, os.path.join(REPO, "new_match.py"),
+                        "--video", str(vid), "--home", "H", "--away", "A",
+                        "--dir", str(mdir)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    cfg = json.loads((mdir / "match_config.json").read_text())
+    assert os.path.isabs(cfg["video_path"])
+    assert cfg["home_team"] == "H" and cfg["away_team"] == "A"
+
+
+def test_new_match_refuses_to_clobber_and_rejects_missing_video(tmp_path):
+    import subprocess, sys as _s
+    vid = tmp_path / "match.mp4"; vid.write_bytes(b"x" * 1024)
+    mdir = tmp_path / "d"
+    args = [_s.executable, os.path.join(REPO, "new_match.py"), "--home", "H",
+            "--away", "A", "--dir", str(mdir)]
+    assert subprocess.run(args + ["--video", str(vid)],
+                          capture_output=True).returncode == 0
+    # second run without --force must refuse
+    assert subprocess.run(args + ["--video", str(vid)],
+                          capture_output=True).returncode == 1
+    # missing video must refuse
+    assert subprocess.run(args + ["--video", str(tmp_path / "nope.mp4"), "--force"],
+                          capture_output=True).returncode == 1
+
+
+def test_new_match_sibling_check_is_case_insensitive(tmp_path):
+    """The decoy is DJI_..._D.MP4. A check for a case-sensitivity trap must not
+    itself be case-sensitive, or it misses the case it exists to catch."""
+    src = open(os.path.join(REPO, "new_match.py"), encoding="utf-8").read()
+    assert 'glob("*.mp4")' not in src
+    assert 'suffix.lower() == ".mp4"' in src
+
+
+def test_check_setup_mirrors_the_runners_env_search_order():
+    """If preflight looks somewhere the runner does not, a green check can
+    precede a keyless run."""
+    setup_src = open(os.path.join(REPO, "check_setup.py"), encoding="utf-8").read()
+    runner_src = open(os.path.join(REPO, "pipeline_runner_v2.py"), encoding="utf-8").read()
+    for token in ('REPO / ".env"', 'REPO.parent / ".env"', 'Path.home() / ".env"'):
+        assert token in setup_src, f"preflight missing search path: {token}"
+    assert "Path.home()/'.env'" in runner_src or 'Path.home()/".env"' in runner_src

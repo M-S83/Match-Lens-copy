@@ -781,7 +781,7 @@ def build_input_bundle(match_dir: str) -> dict:
     if missing_required:
         raise FileNotFoundError(
             f"[3l_synthesis] Cannot proceed — required files missing:\n"
-            + "\n".join(f"  {match_dir}\\{f}" for f in missing_required)
+            + "\n".join(f"  {os.path.join(match_dir, f)}" for f in missing_required)
         )
 
     for fname in OPTIONAL_FILES:

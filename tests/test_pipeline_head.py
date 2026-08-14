@@ -386,3 +386,76 @@ def test_step1c_reports_clean_only_for_a_successful_analysis():
         for outer in _ast.walk(tree)
         if isinstance(outer, _ast.If) and _says_clean(outer))
     assert guarded, "the 'clean' claim is not guarded by an error check"
+
+
+# ── contact_sheet: the operator's tool when detection is confidently wrong ────
+
+def test_parse_time_accepts_the_formats_the_pipeline_prints():
+    from contact_sheet import parse_time
+    assert parse_time("67m00s") == 4020        # frame filename style
+    assert parse_time("67:00") == 4020         # window_plan label style
+    assert parse_time("67m") == 4020
+    assert parse_time("4020") == 4020          # raw seconds
+    assert parse_time("0") == 0
+    assert parse_time("120m25s") == 7225
+
+
+def test_parse_time_rejects_garbage_rather_than_guessing():
+    import argparse as _ap
+    from contact_sheet import parse_time
+    for bad in ("half time", "", "m s", "1h2m"):
+        with pytest.raises((_ap.ArgumentTypeError, ValueError)):
+            parse_time(bad)
+
+
+def test_contact_sheet_frame_name_matches_extractor():
+    """Both must reconstruct the same filename or the sheet finds nothing."""
+    import contact_sheet
+    import extract_frames
+    for sec in (0, 7, 59, 60, 3150, 7225):
+        assert contact_sheet.frame_name(sec) == extract_frames.frame_name(sec)
+
+
+@needs_cv2
+def test_contact_sheet_tiles_the_requested_frames(tmp_path):
+    from contact_sheet import build_sheet
+    from extract_frames import extract_1fps
+    pytest.importorskip("PIL.Image")
+
+    md = tmp_path / "match"
+    (md / "frames").mkdir(parents=True)
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    extract_1fps(video, str(md / "frames"))
+
+    out = str(tmp_path / "sheet.png")
+    r = build_sheet(str(md), 0, 9, every=3, cols=2, tile_w=64, out_path=out)
+    assert r["tiles"] == 4                     # 0, 3, 6, 9
+    assert r["missing"] == []
+    assert os.path.exists(out)
+
+
+@needs_cv2
+def test_contact_sheet_reports_missing_frames(tmp_path, capsys):
+    """A gap in the sheet is a gap in the evidence the operator decides on."""
+    from contact_sheet import build_sheet
+    from extract_frames import extract_1fps, frame_name
+    pytest.importorskip("PIL.Image")
+
+    md = tmp_path / "match"
+    (md / "frames").mkdir(parents=True)
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    extract_1fps(video, str(md / "frames"))
+    os.remove(os.path.join(str(md / "frames"), frame_name(3)))
+
+    r = build_sheet(str(md), 0, 9, every=3, cols=2, tile_w=64,
+                    out_path=str(tmp_path / "sheet.png"))
+    assert 3 in r["missing"]
+    assert "absent" in capsys.readouterr().out
+
+
+def test_contact_sheet_refuses_when_no_frames_exist(tmp_path):
+    from contact_sheet import build_sheet
+    (tmp_path / "frames").mkdir()
+    with pytest.raises(FileNotFoundError):
+        build_sheet(str(tmp_path), 0, 9, every=3, cols=2, tile_w=64,
+                    out_path=str(tmp_path / "s.png"))

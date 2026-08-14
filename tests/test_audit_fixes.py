@@ -682,3 +682,56 @@ def test_run_match_does_not_clobber_an_existing_env(tmp_path, monkeypatch):
     (tmp_path / ".env").write_bytes(b"ANTHROPIC_API_KEY=original\n")
     assert run_match.ensure_env(force=False, key_arg="sk-ant-NEW") is True
     assert b"original" in (tmp_path / ".env").read_bytes()
+
+
+def test_new_match_writes_lineups_as_a_list_of_team_objects(tmp_path):
+    """Consumers iterate lineups (build_readiness_check.py:277,
+    deep_skill_metrics.py:354). A dict yields bare key strings and silently
+    contributes nothing to player identification."""
+    import subprocess, sys as _s
+    vid = tmp_path / "m.mp4"; vid.write_bytes(b"x")
+    mdir = tmp_path / "d"
+    assert subprocess.run([_s.executable, os.path.join(REPO, "new_match.py"),
+                           "--video", str(vid), "--home", "H", "--away", "A",
+                           "--dir", str(mdir)], capture_output=True).returncode == 0
+    cfg = json.loads((mdir / "match_config.json").read_text())
+    assert isinstance(cfg["lineups"], list)
+    assert [t["team"]["name"] for t in cfg["lineups"]] == ["H", "A"]
+    for team in cfg["lineups"]:
+        assert "startXI" in team and "substitutes" in team
+
+
+# ── A8: kickoff must come from the detected boundaries, not a 0 fallback ─────
+
+def test_a8_resolver_prefers_detected_boundaries(tmp_path):
+    from pipeline_runner_v2 import resolve_kickoffs
+    (tmp_path / "match_boundaries.json").write_text(json.dumps({
+        "boundaries": {"ko_1h": {"seconds": 300}, "ko_2h": {"seconds": 3300},
+                       "ht_whistle": {"seconds": 3000}}}))
+    # match_config says nothing; the detected values must win over a 0 fallback
+    assert resolve_kickoffs(str(tmp_path), {}) == (300, 3300, 3000)
+
+
+def test_a8_resolver_falls_back_to_config_then_zero(tmp_path):
+    from pipeline_runner_v2 import resolve_kickoffs
+    assert resolve_kickoffs(str(tmp_path), {"ko_1h_s": 120, "ko_2h_s": 2900}) \
+        == (120, 2900, 2820)
+    ko1, ko2, _ = resolve_kickoffs(str(tmp_path), {})
+    assert (ko1, ko2) == (0, 2700)
+
+
+def test_a8_match_state_uses_detected_kickoff(tmp_path):
+    """The defect in the terms that matter: with 5 minutes of pre-match footage,
+    a 6th-minute goal sits at video 660s, not 360s. Windows in between were told
+    1-0 when it was still 0-0."""
+    from pipeline_runner_v2 import _match_state_at_window
+    (tmp_path / "match_boundaries.json").write_text(json.dumps({
+        "boundaries": {"ko_1h": {"seconds": 300}, "ko_2h": {"seconds": 3300},
+                       "ht_whistle": {"seconds": 3000}}}))
+    mc = {"home_team": "Gorleston", "away_team": "Tilbury",
+          "goals": [{"time": {"elapsed": 6}, "team": {"name": "Gorleston"}}]}
+    win = {"start_s": 500, "end_s": 800}          # video 500s = match ~3'20"
+    st = _match_state_at_window(mc, win, str(tmp_path))
+    assert st["home_score"] == 0, "goal counted before it happened"
+    later = _match_state_at_window(mc, {"start_s": 700, "end_s": 1000}, str(tmp_path))
+    assert later["home_score"] == 1

@@ -35,8 +35,17 @@ def build_config(args) -> dict:
         "home_gk_kit": args.home_gk_kit or "",
         # Fill these in for materially better output -- see the notes printed
         # after this file is written.
-        "lineups":       {"home": [], "away": []},
+        #
+        # lineups is a LIST of team objects, not a dict. Every consumer iterates
+        # it -- build_readiness_check.py:277, deep_skill_metrics.py:354 -- so a
+        # {"home": [], "away": []} dict yields bare key strings and silently
+        # contributes nothing to player identification.
+        "lineups": [
+            {"team": {"name": args.home}, "startXI": [], "substitutes": []},
+            {"team": {"name": args.away}, "startXI": [], "substitutes": []},
+        ],
         "goals":         [],
+        "cards":         [],
         "substitutions": [],
     }
 

@@ -849,7 +849,51 @@ based on what you see - use the confirmed names above.
 """
 
 
-def _match_state_at_window(mc: dict, window: dict) -> dict:
+def resolve_kickoffs(match_dir: str, mc: dict, wp: dict | None = None) -> tuple:
+    """Resolve (ko_1h_s, ko_2h_s, ht_s) in video seconds.
+
+    Priority: match_boundaries.json -> window_plan.json -> match_config.json -> 0.
+
+    A8: three sites needed these and only two resolved them correctly.
+    `_match_state_at_window` read match_config alone and fell back to 0, i.e.
+    "the video begins exactly at kickoff" -- even though Step 1b had already
+    detected the real kickoff and written it to match_boundaries.json. The
+    answer was on disk and was not consulted, so every goal was placed earlier
+    than it happened by the length of the pre-match footage, and windows in
+    between were told the wrong scoreline.
+    """
+    wp = wp or {}
+    bpath = os.path.join(match_dir, "match_boundaries.json")
+    if os.path.exists(bpath):
+        try:
+            with open(bpath, encoding="utf-8") as f:
+                b = json.load(f).get("boundaries", {})
+            ko1 = (b.get("ko_1h") or {}).get("seconds")
+            ko2 = (b.get("ko_2h") or {}).get("seconds")
+            ht  = (b.get("ht_whistle") or {}).get("seconds")
+            if ko1 is not None:
+                return (ko1,
+                        ko2 if ko2 is not None else ko1 + 2700,
+                        ht  if ht  is not None else ko1 + 2700)
+        except (OSError, json.JSONDecodeError, KeyError):
+            pass   # fall through to the config-supplied values
+
+    ko1 = wp.get("ko_1h_s")
+    if ko1 is None:
+        ko1 = mc.get("ko_1h_s")
+    ko2 = wp.get("ko_2h_s")
+    if ko2 is None:
+        ko2 = mc.get("ko_2h_s")
+    ht  = wp.get("ht_s")
+    if ht is None:
+        ht = mc.get("ht_s")
+    ko1 = 0 if ko1 is None else ko1
+    ko2 = (ko1 + 2700) if ko2 is None else ko2
+    ht  = (ko1 + 2700) if ht  is None else ht
+    return ko1, ko2, ht
+
+
+def _match_state_at_window(mc: dict, window: dict, match_dir: str = "") -> dict:
     """
     Calculate the match score and state at the START of a given window.
     Uses confirmed goals from match_config and window start_s timestamp.
@@ -863,12 +907,8 @@ def _match_state_at_window(mc: dict, window: dict) -> dict:
     # 0 / 2700 so goal-time mapping degrades to "broadcast clock ≈ match
     # clock" rather than crashing on None+int. Score state becomes
     # approximate, which matches the recording's actual signal quality.
-    ko_1h_s   = mc.get("ko_1h_s")
-    ko_2h_s   = mc.get("ko_2h_s")
-    if ko_1h_s is None:
-        ko_1h_s = 0
-    if ko_2h_s is None:
-        ko_2h_s = ko_1h_s + 2700
+    # A8: was mc-only with a 0 fallback, ignoring the detected boundaries.
+    ko_1h_s, ko_2h_s, _ = resolve_kickoffs(match_dir, mc)
 
     win_start_s = get_window_start_seconds(window)
 
@@ -977,7 +1017,7 @@ Central play only: defending_third / middle / attacking_third.
     }, indent=2)
 
     # Fix 33a B3: derive match state from confirmed goals + window start_s.
-    ms          = _match_state_at_window(mc, window)
+    ms          = _match_state_at_window(mc, window, match_dir)
     score_h     = ms["home_score"]
     score_a     = ms["away_score"]
     match_state = ms["state"]
@@ -1282,7 +1322,7 @@ def build_player_prompt(match_dir: str, window: dict, mc: dict,
     formation = structural_context.get("formation", {}) or {}
     pressing  = structural_context.get("pressing", {}) or {}
     def_line  = structural_context.get("defensive_line", {}) or {}
-    ms        = _match_state_at_window(mc, window)
+    ms        = _match_state_at_window(mc, window, match_dir)
 
     structural_block = f"""=== STRUCTURAL CONTEXT (from 3a output for this window) ===
 Formation:         home={formation.get('home','?')} / away={formation.get('away','?')}

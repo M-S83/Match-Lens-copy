@@ -7,14 +7,23 @@ other session would otherwise have to guess at.
 
 Keep it short. A file that is actually maintained beats a process document.
 
-**Nothing in this file may state something that invalidates itself on write.**
-The first version pinned the commit hash at the top; it was wrong the instant it
-was committed, because the commit that updates the hash becomes the new hash. It
-also contradicted rule 3 below — a written state claim placed where it invites
-exactly the trust the protocol forbids, so a session that read the table and
-skipped the command would have *followed the file and broken the protocol*.
-Fields that change with every commit belong in a command, not in a committed
-file.
+Written state decays in two distinct ways, and they need different remedies.
+Know which kind each row is before trusting it.
+
+**Self-invalidating** — cannot be correct at rest. The first version pinned the
+commit hash at the top; it was wrong the instant it was committed, because the
+commit that updates the hash becomes the new hash. It also contradicted rule 3
+below: a written state claim placed where it invites exactly the trust the
+protocol forbids, so a session that read the table and skipped the command would
+have *followed the file and broken the protocol*. **Remedy: replace the value
+with the command.** Never write the value at all.
+
+**Stale-prone** — can be true when written, and drifts. The test count went
+42 → 45 across two commits in one session. Nothing about committing "45 passing"
+makes it false, so no command is forced; it simply rots unless the commit that
+changes the fact also updates this file. **Remedy: discipline, plus never
+reading these as verification.** They are orientation — roughly where things
+stand — and a command is given for anyone who needs the real answer.
 
 ---
 
@@ -24,8 +33,8 @@ file.
 |---|---|
 | **Repo** | `M-S83/Match-Lens-copy` — branch `claude/repo-duplication-gi8ood` |
 | **Head** | `git ls-remote --heads https://github.com/M-S83/Match-Lens-copy.git` — **never trust a hash written here** (rule 3) |
-| **Tests** | 45 passing, each mutation-checked |
-| **Fabrications** | 9 fixed (F1–F9), 16 open (O1–O17 less those closed) |
+| **Tests** | *orientation only:* 45 passing, each mutation-checked. To verify: `python -m pytest tests/ -q` |
+| **Fabrications** | *orientation only:* 9 fixed (F1–F9), 16 open. `FABRICATION-AUDIT.md` is the record |
 | **Blocking the run** | nothing |
 | **Awaiting** | first real match run; the Grays video, ~20 windows, ~$8.75 at standard |
 

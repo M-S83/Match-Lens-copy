@@ -652,3 +652,33 @@ def test_runner_reads_env_as_utf_8_sig():
     for mod in ("pipeline_runner_v2.py", "synthesis_agent.py"):
         src = open(os.path.join(REPO, mod), encoding="utf-8").read()
         assert 'encoding="utf-8-sig"' in src, f"{mod} load_dotenv is not BOM-tolerant"
+
+
+def test_run_match_writes_env_as_clean_utf8(tmp_path, monkeypatch):
+    """The orchestrator is Python precisely so .env encoding cannot go wrong:
+    no UTF-16, no BOM, LF endings."""
+    import run_match
+    monkeypatch.setattr(run_match, "REPO", tmp_path)
+    assert run_match.ensure_env(force=False, key_arg="sk-ant-ABCD") is True
+    raw = (tmp_path / ".env").read_bytes()
+    assert raw[:2] not in (b"\xff\xfe", b"\xfe\xff"), "UTF-16 written"
+    assert raw[:3] != b"\xef\xbb\xbf", "BOM written"
+    assert raw == b"ANTHROPIC_API_KEY=sk-ant-ABCD\n"
+    from dotenv import dotenv_values
+    assert dotenv_values(tmp_path / ".env")["ANTHROPIC_API_KEY"] == "sk-ant-ABCD"
+
+
+def test_run_match_refuses_an_existing_utf16_env(tmp_path, monkeypatch, capsys):
+    import run_match
+    monkeypatch.setattr(run_match, "REPO", tmp_path)
+    (tmp_path / ".env").write_bytes("ANTHROPIC_API_KEY=x\n".encode("utf-16"))
+    assert run_match.ensure_env(force=False, key_arg="sk-ant-ABCD") is False
+    assert "UTF-16" in capsys.readouterr().out
+
+
+def test_run_match_does_not_clobber_an_existing_env(tmp_path, monkeypatch):
+    import run_match
+    monkeypatch.setattr(run_match, "REPO", tmp_path)
+    (tmp_path / ".env").write_bytes(b"ANTHROPIC_API_KEY=original\n")
+    assert run_match.ensure_env(force=False, key_arg="sk-ant-NEW") is True
+    assert b"original" in (tmp_path / ".env").read_bytes()

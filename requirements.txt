@@ -1,0 +1,52 @@
+# Match Lens — core runtime dependencies
+#
+# See AUDIT-2026-08.md A10: the repo previously had no dependency manifest at
+# all, and four of the seven imports have a package name that differs from the
+# import name, so the set could not be reconstructed by reading imports.
+#
+# THESE ARE FLOORS, NOT A LOCKFILE. Each floor below is derived from the API
+# surface the code actually uses (noted per line), not from a known-good
+# install. To produce a real lockfile, run `pip freeze > requirements.lock.txt`
+# on a machine where the pipeline is known to work, and commit that alongside.
+#
+# Python >= 3.10 is required: the codebase uses PEP 604 unions in annotations
+# (`str | None`) in ~15 places. Developed and verified against 3.11.
+
+# Claude API client. Floor is set by the Message Batches API --
+# client.messages.batches.{create,retrieve,results} (batch_runner.py) -- which
+# entered the SDK at 0.39.0. Also uses the top-level error classes
+# (APIConnectionError, APIStatusError, APITimeoutError, RateLimitError,
+# AuthenticationError, BadRequestError).
+anthropic>=0.39.0
+
+# Video decode and frame extraction: VideoCapture, CAP_PROP_{FPS,FRAME_COUNT,
+# POS_FRAMES}, imwrite, cvtColor, Laplacian (frame_extraction.py,
+# frame_preprocessor.py, container_analyser.py).
+opencv-python>=4.5.0
+
+# Frame image handling: Image.open/fromarray, Image.LANCZOS (frame_preprocessor.py,
+# detect_boundaries.py). Floor 9.4 because Image.LANCZOS was deprecated in 9.1 in
+# favour of Image.Resampling.LANCZOS and restored as a working alias in 9.4.
+Pillow>=9.4.0
+
+# Array ops in the frame preprocessor: array, zeros, where, abs, maximum, minimum.
+# NOTE: not exercised against numpy 2.x here. If you upgrade, re-check
+# frame_preprocessor.py against the opencv-python build in use.
+numpy>=1.21.0
+
+# .env loading for ANTHROPIC_API_KEY (load_dotenv).
+python-dotenv>=0.19.0
+
+# Step 5 Word conversion: Document, shared.{Pt,RGBColor,Inches,Cm}, enum.text,
+# enum.table, oxml (md_to_docx.py).
+python-docx>=0.8.11
+
+# NOT INCLUDED, deliberately:
+#   easyocr  -> see requirements-ocr.txt. It pulls torch (~2GB). jersey_ocr.py
+#               imports it lazily inside a function and the pipeline marks step
+#               2b_jersey_ocr "skipped" on any failure, so the pipeline runs
+#               without it.
+#
+# External binaries (not pip-installable, must be on PATH):
+#   ffmpeg / ffprobe  -- container_analyser.py reads stream metadata via ffprobe.
+#                        No version floor established; any modern build works.

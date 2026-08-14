@@ -1,0 +1,10 @@
+# Development / test dependencies.
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pytest -q
+#
+# The suite stubs the heavy runtime deps (see tests/conftest.py), so the tests
+# themselves run without opencv/anthropic/Pillow installed. Installing
+# requirements.txt is still recommended so you are testing against the real
+# import surface.
+
+pytest>=8.0

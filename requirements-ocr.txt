@@ -1,0 +1,12 @@
+# Optional: jersey-number OCR (Step 2b).
+#
+# Kept out of requirements.txt because easyocr pulls torch (~2GB) and the
+# pipeline degrades gracefully without it: jersey_ocr.py imports easyocr lazily
+# inside scan_frames(), and pipeline_runner_v2 marks 2b_jersey_ocr "skipped" on
+# any failure rather than aborting the run.
+#
+# Install only if you need jersey numbers:  pip install -r requirements-ocr.txt
+
+# Uses easyocr.Reader(['en'], gpu=False, verbose=False) -- the verbose kwarg
+# sets the floor.
+easyocr>=1.6.0

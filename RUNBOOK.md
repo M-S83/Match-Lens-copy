@@ -170,6 +170,46 @@ Notes that matter for output quality:
 
 ---
 
+## Prepare the match (Steps 1a, 1, 1b, 1c)
+
+`pipeline_runner_v2.py` is the **back half** of the pipeline. Run it on a cold
+match directory and it exits immediately:
+
+```
+ERROR: window_plan.json not found. Run window_plan.py first.
+```
+
+The head is four steps, each consuming the one before:
+
+| Step | Script | Produces | Cost |
+|---|---|---|---|
+| 1a | `container_analyser.py` | `container_profile.json` | free, seconds |
+| 1 | `extract_frames.py` | `frames/frame_MMmSSs.jpg` at 1fps | free, minutes |
+| 1b | `detect_boundaries.py` | `match_boundaries.json` | **paid** (Haiku), small |
+| 1c | `window_plan.py` | `window_plan.json` | free |
+
+One command runs all four in order:
+
+```bat
+python prepare_match.py "C:\Users\dbmux\Desktop\Grays Analysis"
+```
+
+Each step is skipped if its output already exists, so re-running after a
+failure resumes rather than repeating. `--force` re-runs everything.
+
+It ends by printing the frame count and window count. **A zero-window plan is
+a hard failure** — it means boundary detection found no live play, and there is
+nothing to analyse. Do not spend anything on the main run until that number is
+plausible (a 90-minute match at 5-minute windows gives roughly 19–22).
+
+Step 1b is the only paid step here and the only one that can be wrong in a way
+that looks fine: it decides where kickoff, half time, second-half kickoff and
+full time fall. Every window is cut from those four timestamps, so if they are
+wrong the entire analysis covers the wrong minutes of footage. Read what it
+prints — each boundary comes with a confidence — before continuing.
+
+---
+
 ## Cost estimate first
 
 Do this before any paid run:

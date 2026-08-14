@@ -209,6 +209,7 @@ def main():
         print('    python new_match.py --video "<path to .mp4>" \\')
         print('                        --home "Home Team" --away "Away Team" \\')
         print('                        --dir "<match dir>"')
+        print('    python prepare_match.py "<match dir>"          # Steps 1a/1/1b/1c')
         print('    python pipeline_runner_v2.py "<match dir>" --quality standard')
         print("=" * 64)
         return 0

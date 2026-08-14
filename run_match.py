@@ -12,7 +12,8 @@ It performs, in order, stopping at the first failure:
   1. writes .env if absent (prompting for the key, never echoing it)
   2. runs check_setup.py and aborts unless it exits 0
   3. scaffolds match_config.json via new_match.py
-  4. runs the pipeline
+  4. runs the pipeline head (prepare_match.py: Steps 1a, 1, 1b, 1c)
+  5. runs the pipeline
 
 Written in Python rather than PowerShell on purpose. `.env` encoding is the
 single most common way setup fails on Windows -- PowerShell's `>` writes UTF-16
@@ -131,13 +132,21 @@ def main() -> int:
         else:
             return 1
 
-    step(4, "Pipeline")
+    step(4, "Pipeline head -- Steps 1a/1/1b/1c")
+    # pipeline_runner_v2.py is the back half and exits without window_plan.json.
+    # Step 1b inside here calls the API, so --dry-run stops before it.
     if args.dry_run:
-        print("  --dry-run: stopping before the paid run.\n")
+        print("  --dry-run: stopping before Step 1b, the first paid step.\n")
         print("  When ready:")
+        print(f'    {py} prepare_match.py "{args.directory}"')
         print(f'    {py} pipeline_runner_v2.py "{args.directory}" '
               f'--quality {args.quality}')
         return 0
+    if run([py, str(REPO / "prepare_match.py"), args.directory]) != 0:
+        print("\n  Pipeline head failed -- not starting the main run.")
+        return 1
+
+    step(5, "Pipeline")
 
     print("  Fill in `lineups` and `goals` in match_config.json first if you")
     print("  can — both materially improve output. Ctrl-C now if you want to.\n")

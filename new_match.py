@@ -114,6 +114,7 @@ def main() -> int:
     print("                there is nothing to validate against.")
     print("\n  Then:")
     print(f'    python check_setup.py')
+    print(f'    python prepare_match.py "{match_dir}"')
     print(f'    python pipeline_runner_v2.py "{match_dir}" --quality standard')
     print()
     return 0

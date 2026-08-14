@@ -43,13 +43,27 @@ Step IDs come from module docstrings (`SKILL.md` mostly does not state them).
 
 | Step | Script | Reads | Writes |
 |---|---|---|---|
-| 1 | `frame_extraction.py`, `frame_preprocessor.py` | source `.mp4`, `match_config.json` | `frame_*.jpg`, `*_metadata.json` |
+| 1 | `extract_frames.py` | source `.mp4`, `match_config.json` | `frames/frame_MMmSSs.jpg` (1fps) |
 | 1a | `container_analyser.py` | video container via `ffprobe` | `container_profile.json` |
 | 1b | `detect_boundaries.py` | frames, `match_config.json` | **`match_boundaries.json`** |
 | 1c | `window_plan.py` | `match_boundaries.json`, `container_profile.json`, `match_config.json` | **`window_plan.json`** |
 | 1d | `extract_match_details.py`, `jersey_ocr.py`, `pitch_validation.py` (helper) | teamsheet screenshot, frames | `match_config_draft.json`, `teamsheet_image_raw.json`, `jersey_number_map.json` |
 | 1e | *(no Python — agent vision task)* | frames | attack direction into `match_config.json` |
 | 1f | `source_profiler.py` | sampled frames, `source_profiles_config.json` | **`source_profile.json`**, `result_family_gates.json` |
+
+Run order within Phase 1 is **1a → 1 → 1b → 1c**, not the numeric order of the
+labels: 1a profiles the container before anything decodes it. `prepare_match.py`
+runs those four in that order and is the only entry point that gets a cold match
+directory to a `window_plan.json`.
+
+Two files are easy to confuse with Step 1 and are not it:
+
+- `frame_extraction.py` extracts **5fps bursts around an anchor** for Step 3d-SP.
+  It is not the whole-match pass. (This document previously named it as Step 1's
+  script, which is one reason the missing Step 1 script went unnoticed for so
+  long — the map said the step was covered.)
+- `frame_preprocessor.py` runs **after** Step 1, filtering and labelling frames
+  per window; it produces `*_metadata.json`, not frames.
 
 `source_profile.json` is the quality contract for everything downstream: it
 classifies the footage and thereby determines which tactical claims are

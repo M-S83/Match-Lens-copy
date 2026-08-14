@@ -356,6 +356,19 @@ def run_step_1a(match_dir: str, video_path: str) -> dict:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(stamp_schema_version(profile, "container_profile"), f, indent=2)
 
+    # An error profile carries none of the fields printed below, so indexing
+    # them raised KeyError('format_name') and buried the actual diagnostic --
+    # the ffprobe message this function went to some trouble to produce -- under
+    # a traceback. Report it and return; the caller checks for "error" and
+    # exits non-zero. Returning success here would be worse than the crash:
+    # Step 1c reads this file and, finding no boundary_timestamps_s, would
+    # report the container "clean" on the strength of an analysis that never ran.
+    if profile.get("error"):
+        print(f"  [FAIL] {profile['error']}")
+        print(f"  Error record written: {out_path}")
+        print(f"{'-'*55}")
+        return profile
+
     # Print summary
     print(f"  Format:      {profile['format_name']}")
     print(f"  Duration:    {profile['duration_s']}s")
@@ -382,6 +395,9 @@ def run_step_1a(match_dir: str, video_path: str) -> dict:
 if __name__ == "__main__":
     if len(sys.argv) == 3:
         result = run_step_1a(sys.argv[1], sys.argv[2])
+        # Exit non-zero on a failed analysis so an orchestrator stops here.
+        # Without this the step "succeeds" having written an error record.
+        sys.exit(1 if result.get("error") else 0)
     elif len(sys.argv) == 2:
         # Test mode — just analyse without writing
         profile = analyse_container(sys.argv[1])

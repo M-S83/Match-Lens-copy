@@ -301,3 +301,88 @@ def test_prepare_match_rejects_a_missing_directory():
          os.path.join(REPO, "definitely-not-here")],
         capture_output=True, text=True)
     assert r.returncode != 0
+
+
+# ── Step 1a must fail loudly, and Step 1c must not read failure as "clean" ───
+
+def _error_profile(msg="ffprobe not found on PATH"):
+    return {"error": msg, "video_path": "x.mp4",
+            "seek_reliable": False, "boundaries": []}
+
+
+def test_step1a_reports_the_diagnostic_instead_of_keyerror(tmp_path, capsys,
+                                                           monkeypatch):
+    """The error profile has no 'format_name'.
+
+    run_step_1a printed it unconditionally, so a missing ffprobe surfaced as
+    KeyError('format_name') and buried the diagnostic the guard had produced.
+    """
+    import container_analyser
+    monkeypatch.setattr(container_analyser, "analyse_container",
+                        lambda p: _error_profile())
+    result = container_analyser.run_step_1a(str(tmp_path), "x.mp4")
+    assert result.get("error")
+    out = capsys.readouterr().out
+    assert "ffprobe not found on PATH" in out
+
+
+def test_step1a_exits_non_zero_on_a_failed_analysis(tmp_path):
+    """A step that writes an error record must not report success.
+
+    Exit 0 here lets an orchestrator continue to Step 1, and later to Step 1c,
+    which then reads the error record as though the container were analysed.
+    """
+    src = os.path.join(str(tmp_path), "not-a-video.mp4")
+    with open(src, "wb") as f:
+        f.write(b"definitely not a video")
+    r = subprocess.run(
+        [sys.executable, os.path.join(REPO, "container_analyser.py"),
+         str(tmp_path), src],
+        capture_output=True, text=True)
+    assert r.returncode != 0, (
+        "container_analyser reported success on an unreadable file:\n"
+        + r.stdout + r.stderr)
+
+
+def test_step1c_does_not_call_a_failed_container_clean(tmp_path, capsys):
+    """The forbidden shape: absent input rendered as a legitimate finding.
+
+    window_plan read boundary_timestamps_s with a [] default, so a container
+    profile recording a FAILED analysis printed 'Container: clean'.
+    """
+    import json as _json
+    import window_plan
+
+    (tmp_path / "container_profile.json").write_text(
+        _json.dumps(_error_profile()), encoding="utf-8")
+
+    # Exercise only the container-reading branch; a full plan needs boundaries.
+    with open(str(tmp_path / "container_profile.json"), encoding="utf-8") as f:
+        cp = _json.load(f)
+    src = open(os.path.join(REPO, "window_plan.py"), encoding="utf-8").read()
+    assert 'cp.get("boundary_timestamps_s", [])' not in src, (
+        "window_plan still defaults a missing boundary list to [], which "
+        "reports a failed container analysis as clean")
+    assert cp.get("error")
+
+
+def test_step1c_reports_clean_only_for_a_successful_analysis():
+    """Guards the pair: 'clean' must sit behind the success branch."""
+    import ast as _ast
+    src = open(os.path.join(REPO, "window_plan.py"), encoding="utf-8").read()
+    tree = _ast.parse(src)
+
+    def _says_clean(node):
+        return any(isinstance(n, _ast.Constant) and isinstance(n.value, str)
+                   and "clean" in n.value for n in _ast.walk(node))
+
+    # Every "clean" claim must be guarded by a check on the error key.
+    clean_ifs = [n for n in _ast.walk(tree)
+                 if isinstance(n, _ast.If) and _says_clean(n)]
+    assert clean_ifs, "no 'clean' message found; test is stale"
+    guarded = any(
+        any(isinstance(c, _ast.Constant) and c.value == "error"
+            for c in _ast.walk(outer.test))
+        for outer in _ast.walk(tree)
+        if isinstance(outer, _ast.If) and _says_clean(outer))
+    assert guarded, "the 'clean' claim is not guarded by an error check"

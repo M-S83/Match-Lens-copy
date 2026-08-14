@@ -247,12 +247,31 @@ def build_window_plan(match_dir: str,
     if os.path.exists(container_path):
         with open(container_path, encoding="utf-8") as f:
             cp = json.load(f)
-        container_boundaries = cp.get("boundary_timestamps_s", [])
-        if container_boundaries:
-            print(f"  Container: {len(container_boundaries)} segment "
-                  f"boundary(ies) at {container_boundaries}s -- windows will snap")
+        # "clean" is a positive claim about the container and may only be made
+        # when the analysis actually ran. An error profile (ffprobe absent, or
+        # an unreadable file) carries no boundary_timestamps_s, so .get(...,[])
+        # used to render a failed analysis as a clean bill of health -- absent
+        # input reported as a legitimate negative finding.
+        if cp.get("error"):
+            container_boundaries = []
+            print(f"  [!]  Container: analysis FAILED -- {cp['error']}")
+            print(f"       Proceeding without boundary alignment. This is not "
+                  f"evidence the container is clean;")
+            print(f"       if it has segment joins, window edges will not snap "
+                  f"away from them.")
+        elif "boundary_timestamps_s" not in cp:
+            container_boundaries = []
+            print(f"  [!]  Container: container_profile.json has no "
+                  f"boundary_timestamps_s field -- cannot tell whether the")
+            print(f"       container is clean. Re-run Step 1a. Proceeding "
+                  f"without boundary alignment.")
         else:
-            print(f"  Container: clean -- no boundary snapping needed")
+            container_boundaries = cp["boundary_timestamps_s"]
+            if container_boundaries:
+                print(f"  Container: {len(container_boundaries)} segment "
+                      f"boundary(ies) at {container_boundaries}s -- windows will snap")
+            else:
+                print(f"  Container: clean -- no boundary snapping needed")
     else:
         print(f"  [!]  container_profile.json not found -- run Step 1a first "
               f"(proceeding without boundary alignment)")

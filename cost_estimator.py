@@ -171,13 +171,30 @@ def check_credits_available(required_usd: float) -> dict:
 
 # ── Print estimate ────────────────────────────────────────────────────────────
 
-def print_estimate(match_data: dict, estimates: list, budget: float = None):
+def print_estimate(match_data: dict, estimates: list, budget: float = None) -> bool:
+    """Print the estimate. Returns False if no usable estimate could be made."""
     print(f"\n{'='*60}")
     print(f"  Match Lens Cost Estimate")
     print(f"  {match_data['match']}")
     print(f"  {match_data['total_windows']} windows | {match_data['goals']} goals | "
           f"{match_data['event_windows']} event windows")
     print(f"{'='*60}\n")
+
+    # NO FABRICATION: every per-window cost scales with total_windows, which
+    # comes from window_plan.json. On a cold match directory that file does not
+    # exist yet, so windows = [] and the estimator happily printed a confident
+    # total built from zero windows -- roughly $0.73 against a real $8.75 for
+    # the same 96-minute video. A 12x understatement that exits 0 and reads as
+    # success is worse than no estimate at all, because it is acted on.
+    if not match_data["total_windows"]:
+        print("  ESTIMATE UNAVAILABLE -- no window plan exists yet.\n")
+        print("  Cost scales with the number of analysis windows, and")
+        print("  window_plan.json has not been generated for this match, so")
+        print("  every figure below would be computed from zero windows.")
+        print("  Run the pipeline through Step 1c (window plan) first, then")
+        print("  re-run this estimate.\n")
+        print(f"{'='*60}\n")
+        return False
 
     for est in estimates:
         print(f"  {est['label']} ({est['quality']})")
@@ -208,6 +225,7 @@ def print_estimate(match_data: dict, estimates: list, budget: float = None):
     print(f"  Credit check: {credit_info['message']}")
     print(f"  https://console.anthropic.com/settings/billing")
     print()
+    return True
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -228,10 +246,24 @@ if __name__ == "__main__":
     else:
         estimates = [calculate_cost(match_data, args.quality)]
 
-    print_estimate(match_data, estimates, args.budget)
+    ok = print_estimate(match_data, estimates, args.budget)
 
-    # Write estimate to file
     out_path = os.path.join(args.match_dir, "cost_estimate.json")
+    if not ok:
+        # NO FABRICATION: persisting figures computed from zero windows would
+        # leave a file that reads as a real estimate. Record the absence.
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(stamp_schema_version(
+                {"match": match_data, "estimates": None,
+                 "estimate_available": False,
+                 "reason": "window_plan.json absent -- cost scales with window "
+                           "count, so no estimate can be made before Step 1c"},
+                "cost_estimate"), f, indent=2)
+        print(f"  Recorded as unavailable in: {out_path}\n")
+        sys.exit(2)
+
     with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(stamp_schema_version({"match": match_data, "estimates": estimates}, "cost_estimate"), f, indent=2)
+        json.dump(stamp_schema_version(
+            {"match": match_data, "estimates": estimates,
+             "estimate_available": True}, "cost_estimate"), f, indent=2)
     print(f"  Estimate written to: {out_path}\n")

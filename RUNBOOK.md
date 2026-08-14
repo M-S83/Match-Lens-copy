@@ -59,13 +59,24 @@ python -m pytest tests\ -q
 
 ## Set up the match directory
 
-One directory per match. **The video goes inside it** —
-`frame_extraction.py:74` globs `<match_dir>\*.mp4`, so the filename does not
-matter but the location does.
+One directory per match. **You do not have to move the video into it.**
+
+`frame_extraction.py:52-88` resolves the source video in this order:
+
+1. `match_config.video_path` — **absolute paths are accepted**. Preferred: no
+   copying gigabytes around.
+2. A single `*.mp4` in the match directory.
+3. Several `*.mp4` in the match directory — it picks the **largest** and only
+   warns.
+
+Rule 3 is a trap on a folder that holds more than one video. `Desktop\Grays
+Analysis` contains a 3.76 GB `DJI_20250413113449_0002_D.MP4` alongside the 1.84 GB
+match file, and the glob is case-insensitive on Windows — so it would silently
+select the drone clip and carry on. **Set `video_path` explicitly and the
+ambiguity disappears.**
 
 ```
-Grays Analysis\
-  69ca09036f6e8ccff1207418.mp4
+Grays Analysis\                 <- match_dir (video may live elsewhere)
   match_config.json
 ```
 
@@ -81,6 +92,7 @@ the whole pipeline (18 and 13 call sites); everything else degrades gracefully.
   "home_team": "Grays Athletic",
   "away_team": "[Opponent]",
   "focus_team": "home",
+  "video_path": "C:\\Users\\dbmux\\Desktop\\Grays Analysis\\69ca09036f6e8ccff1207418.mp4",
   "home_kit": "blue shirts, blue shorts",
   "away_kit": "white shirts, black shorts",
   "home_gk_kit": "green",
@@ -111,8 +123,18 @@ Notes that matter for output quality:
 Do this before any paid run:
 
 ```bat
-python pipeline_runner_v2.py "C:\Users\dbmux\Desktop\Grays Analysis" --estimate-only
+python pipeline_runner_v2.py "<match_dir>" --estimate-only
 ```
+
+**The estimate is meaningless until a window plan exists.** Every per-window
+cost scales with `total_windows`, which comes from `window_plan.json`. On a cold
+match directory that file is absent, so the figure is computed from zero
+windows: about $0.73 against a real $8.75 for the same 96-minute video, a 12x
+understatement that used to exit 0 and read as success.
+
+It now refuses instead — prints `ESTIMATE UNAVAILABLE`, exits 2, and records
+`estimate_available: false` in `cost_estimate.json` rather than persisting a
+number it cannot stand behind. Run through Step 1c first, then estimate.
 
 ---
 

@@ -3216,8 +3216,10 @@ if __name__ == "__main__":
     if args.estimate_only:
         md  = load_match_data(args.match_dir)
         est = [calculate_cost(md, q) for q in ["economy","standard","full","full_1fps"]]
-        print_estimate(md, est)
-        sys.exit(0)
+        _est_ok = print_estimate(md, est)
+        # Exit non-zero when no usable estimate exists, so --estimate-only
+        # cannot read as "priced and fine" on a cold match directory.
+        sys.exit(0 if _est_ok else 2)
 
     # --blind-formation auto-implies --force-structural when 3a is already done
     if args.blind_formation:

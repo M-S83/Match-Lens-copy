@@ -458,3 +458,36 @@ def test_no_compiled_artifacts_committed_under_skills():
     for root_dir, dirs, files in os.walk(SKILLS):
         assert "__pycache__" not in dirs, f"__pycache__ under {root_dir}"
         assert not [f for f in files if f.endswith(".pyc")], f".pyc under {root_dir}"
+
+
+# ── Cost estimate must not price a match it cannot price ─────────────────────
+
+def test_estimate_refuses_on_a_cold_match_directory(tmp_path, capsys):
+    """Every per-window cost scales with total_windows, which comes from
+    window_plan.json. Cold, that is zero, and the estimator printed a confident
+    total ~12x under the real figure and exited 0."""
+    from cost_estimator import load_match_data, calculate_cost, print_estimate
+    (tmp_path / "match_config.json").write_text(json.dumps(
+        {"match": "X vs Y", "goals": [], "substitutions": []}))
+    md = load_match_data(str(tmp_path))
+    assert md["total_windows"] == 0
+    ok = print_estimate(md, [calculate_cost(md, "standard")])
+    assert ok is False, "a zero-window estimate must not be presented as usable"
+    out = capsys.readouterr().out
+    assert "ESTIMATE UNAVAILABLE" in out
+    assert "$" not in out.split("ESTIMATE UNAVAILABLE")[1], \
+        "no dollar figures may follow the unavailable notice"
+
+
+def test_estimate_works_once_a_window_plan_exists(tmp_path):
+    from cost_estimator import load_match_data, calculate_cost, print_estimate
+    (tmp_path / "match_config.json").write_text(json.dumps(
+        {"match": "X vs Y", "goals": [], "substitutions": []}))
+    (tmp_path / "window_plan.json").write_text(json.dumps(
+        {"windows": [{"agent_id": f"{i:02d}", "start_s": i*300,
+                      "end_s": (i+1)*300} for i in range(20)]}))
+    md = load_match_data(str(tmp_path))
+    assert md["total_windows"] == 20
+    est = calculate_cost(md, "standard")
+    assert est["total_cost_usd"] > 0
+    assert print_estimate(md, [est]) is True

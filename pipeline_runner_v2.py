@@ -40,7 +40,7 @@ for _env_path in [Path(__file__).resolve().parent/'.env',
                   Path(__file__).resolve().parent.parent/'.env',
                   Path.home()/'.env']:
     if _env_path.exists():
-        load_dotenv(_env_path, override=True)
+        load_dotenv(_env_path, override=True, encoding="utf-8-sig")
         _loaded_env = True
         import anthropic as _a_test
         _key = _a_test.Anthropic().api_key or ""

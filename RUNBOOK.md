@@ -53,11 +53,28 @@ pip install -r requirements-reports.txt  :: branded PDFs (needs system libs)
 pip install -r requirements-dev.txt      :: pytest
 ```
 
-Create `.env` **in the repository root** (loaded by `pipeline_runner_v2.py:43`):
+Create `.env` **in the repository root** (loaded by `pipeline_runner_v2.py:43`).
 
+**The encoding matters, and PowerShell gets it wrong twice.** Use this — .NET's
+`WriteAllText` produces UTF-8 without a BOM on both PowerShell 5.1 and 7:
+
+```powershell
+[IO.File]::WriteAllText("$PWD\.env", "ANTHROPIC_API_KEY=sk-ant-...")
 ```
-ANTHROPIC_API_KEY=sk-ant-...
-```
+
+Do **not** use either of these:
+
+| Command | What it writes | What happens |
+|---|---|---|
+| `echo ... > .env` | UTF-16 | `UnicodeDecodeError` — loud, at least |
+| `... \| Out-File -Encoding utf8` (PS 5.1) | UTF-8 **with BOM** | parses fine, key is read as `\ufeffANTHROPIC_API_KEY`, lookup silently returns nothing |
+
+The second is the dangerous one: no error, and the preflight would report the key
+missing while the file plainly contains it. `check_setup.py` now detects both and
+names which you have. The runner reads with `utf-8-sig`, so a BOM'd file still
+works at runtime — but fix it anyway rather than relying on that.
+
+Notepad also works: File → Save As → Encoding: **UTF-8** (not "UTF-8 with BOM").
 
 Confirm the suite passes before running anything expensive:
 

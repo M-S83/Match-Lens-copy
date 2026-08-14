@@ -608,3 +608,47 @@ def test_no_deprecated_utcnow_remains():
                     and isinstance(node.func, ast.Attribute)
                     and node.func.attr == "utcnow"):
                 pytest.fail(f"datetime.utcnow() at {path.name}:{node.lineno}")
+
+
+# ── .env encoding: the two ways a Windows .env silently fails ────────────────
+
+def _preflight_env(tmp_path, monkeypatch, data: bytes):
+    import check_setup
+    (tmp_path / ".env").write_bytes(data)
+    monkeypatch.setattr(check_setup, "REPO", tmp_path)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    return check_setup.check_api_key()
+
+
+def test_preflight_diagnoses_utf16_env(tmp_path, monkeypatch, capsys):
+    """PowerShell's `>` writes UTF-16. python-dotenv raises UnicodeDecodeError,
+    and the preflight used to die with a raw traceback."""
+    ok = _preflight_env(tmp_path, monkeypatch,
+                        "ANTHROPIC_API_KEY=sk-ant-ABCD\n".encode("utf-16"))
+    out = capsys.readouterr().out
+    assert ok is False
+    assert "UTF-16" in out and "WriteAllText" in out
+
+
+def test_preflight_diagnoses_utf8_bom_env(tmp_path, monkeypatch, capsys):
+    """The quiet one: PS 5.1 `-Encoding utf8` writes a BOM that becomes part of
+    the first key name, so the lookup returns None with no error at all."""
+    ok = _preflight_env(tmp_path, monkeypatch,
+                        b"\xef\xbb\xbf" + b"ANTHROPIC_API_KEY=sk-ant-ABCD\n")
+    out = capsys.readouterr().out
+    assert ok is False
+    assert "BOM" in out
+
+
+def test_preflight_accepts_clean_utf8_env(tmp_path, monkeypatch, capsys):
+    ok = _preflight_env(tmp_path, monkeypatch, b"ANTHROPIC_API_KEY=sk-ant-ABCD\n")
+    assert ok is True
+    assert "ABCD" in capsys.readouterr().out
+
+
+def test_runner_reads_env_as_utf_8_sig():
+    """utf-8-sig strips a BOM if present, so a BOM'd .env still works at runtime
+    even though the preflight asks for it to be fixed."""
+    for mod in ("pipeline_runner_v2.py", "synthesis_agent.py"):
+        src = open(os.path.join(REPO, mod), encoding="utf-8").read()
+        assert 'encoding="utf-8-sig"' in src, f"{mod} load_dotenv is not BOM-tolerant"

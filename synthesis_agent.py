@@ -43,7 +43,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 import anthropic
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True,
+            encoding="utf-8-sig")
 
 # Fix 42: bump when the Section 3 §3.4 output contract firing rules change.
 # Surfaced into the report manifest (Section 5).

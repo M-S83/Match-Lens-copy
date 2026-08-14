@@ -125,12 +125,39 @@ def check_api_key():
 
     key = None
     if found_env:
+        print(f"{OK} .env found: {found_env}")
         try:
             from dotenv import dotenv_values
-            key = dotenv_values(found_env).get("ANTHROPIC_API_KEY")
-            print(f"{OK} .env found: {found_env}")
         except ImportError:
-            print(f"{WARN} .env found at {found_env} but python-dotenv is not installed")
+            print(f"{WARN} python-dotenv is not installed, cannot read it")
+        else:
+            # Encoding is the single most common way a .env silently fails on
+            # Windows, and the two failure modes need different messages.
+            raw = found_env.read_bytes()
+            if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+                print(f"{FAIL} .env is UTF-16, not UTF-8 -- python-dotenv cannot read it")
+                print( "         PowerShell's `>` redirection writes UTF-16 by default.")
+                print( "         Rewrite it as UTF-8 without a BOM:")
+                print( '           [IO.File]::WriteAllText("$PWD\\.env", "ANTHROPIC_API_KEY=sk-ant-...")')
+                return False
+            try:
+                vals = dotenv_values(found_env)
+            except UnicodeDecodeError as e:
+                print(f"{FAIL} .env is not valid UTF-8: {e}")
+                print( "         Rewrite it as UTF-8 without a BOM:")
+                print( '           [IO.File]::WriteAllText("$PWD\\.env", "ANTHROPIC_API_KEY=sk-ant-...")')
+                return False
+            key = vals.get("ANTHROPIC_API_KEY")
+            if key is None and any(k.lstrip("\ufeff") == "ANTHROPIC_API_KEY"
+                                   for k in vals if k):
+                # The quiet one: PowerShell 5.1's `-Encoding utf8` writes a BOM,
+                # which becomes part of the FIRST key name. Nothing errors; the
+                # lookup just returns None while the file plainly contains it.
+                print(f"{FAIL} .env begins with a UTF-8 BOM, so the first key is read as")
+                print( "         '\\ufeffANTHROPIC_API_KEY' and the lookup silently misses it.")
+                print( "         Rewrite it as UTF-8 without a BOM:")
+                print( '           [IO.File]::WriteAllText("$PWD\\.env", "ANTHROPIC_API_KEY=sk-ant-...")')
+                return False
     else:
         print(f"{WARN} no .env in any of:")
         for p in searched:

@@ -4684,9 +4684,9 @@ python md_to_docx.py "[MATCH_DIR]"
 ```
 
 Run from the repository root, where `md_to_docx.py` lives. Do not hardcode an
-interpreter path or a machine-specific script location -- earlier revisions
-pointed at `C:\Users\<name>\.claude\skills\match-analysis\scripts\`, which
-does not exist on any current machine.
+interpreter path or a machine-specific script location: earlier revisions
+pointed into one developer's home directory, which exists on no current
+machine, so the documented conversion could not run for anyone else.
 
 Converts `tactical_report.md` and each `opposition_report_*.md` to `.docx`.
 

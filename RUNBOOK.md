@@ -16,7 +16,17 @@ directory and had been dead for months.
 **Python 3.10+** (3.11 verified). The code uses PEP 604 unions in annotations.
 
 **ffmpeg / ffprobe on PATH** — `container_analyser.py` shells out to `ffprobe`.
-Windows: `winget install Gyan.FFmpeg`, then reopen the terminal.
+Windows: `winget install Gyan.FFmpeg`, then **open a new terminal** and confirm:
+
+```bat
+ffprobe -version
+```
+
+The new terminal matters: winget's PATH update does not reach shells that are
+already open, and that is the single most likely way step 1a fails. The pipeline
+now returns a named error telling you to install ffmpeg — previously it raised
+`[WinError 2] The system cannot find the file specified`, which mentions neither
+ffprobe nor ffmpeg.
 
 **An Anthropic API key.**
 
@@ -132,9 +142,18 @@ match directory that file is absent, so the figure is computed from zero
 windows: about $0.73 against a real $8.75 for the same 96-minute video, a 12x
 understatement that used to exit 0 and read as success.
 
-It now refuses instead — prints `ESTIMATE UNAVAILABLE`, exits 2, and records
-`estimate_available: false` in `cost_estimate.json` rather than persisting a
-number it cannot stand behind. Run through Step 1c first, then estimate.
+It now refuses instead — prints `ESTIMATE UNAVAILABLE` and exits 2 rather than
+standing behind a number it cannot compute. Run through Step 1c first, then
+estimate.
+
+Note which command you use: **`pipeline_runner_v2.py --estimate-only` never
+writes `cost_estimate.json`** — only the `cost_estimator.py` CLI does. Via the
+runner you get the printed estimate and the exit code but no file on disk. If
+you want the artefact, including the `estimate_available: false` record:
+
+```bat
+python cost_estimator.py "<match_dir>"
+```
 
 ---
 

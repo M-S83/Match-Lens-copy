@@ -14,6 +14,7 @@ Usage:
     python container_analyser.py [MATCH_DIR] [VIDEO_PATH]
 """
 
+import shutil
 import subprocess
 import json
 import os
@@ -28,9 +29,26 @@ def analyse_container(video_path: str) -> dict:
     Returns a unified profile regardless of source type.
     """
 
+    # A missing ffprobe raises FileNotFoundError from subprocess.run BEFORE
+    # returncode exists, so the `returncode != 0` handler below never sees it --
+    # that branch covers a bad video, not an absent binary. On Windows the
+    # uncaught error surfaces as "[WinError 2] The system cannot find the file
+    # specified", which names neither ffprobe nor ffmpeg. This is step 1a, the
+    # first thing the pipeline runs, and the most common cause is mundane: a
+    # winget PATH update that has not reached an already-open terminal.
+    if shutil.which("ffprobe") is None:
+        return {
+            "error": "ffprobe not found on PATH -- install ffmpeg "
+                     "(Windows: winget install Gyan.FFmpeg) and open a NEW "
+                     "terminal, then check with: ffprobe -version",
+            "video_path":    video_path,
+            "seek_reliable": False,
+            "boundaries":    [],
+        }
+
     # ── 1. Format and stream metadata ────────────────────────────────────────
     fmt_cmd = [
-        "ffprobe", "-v", "quiet",
+        "ffprobe", "-v", "error",
         "-show_format",
         "-show_streams",
         "-of", "json",
@@ -40,7 +58,9 @@ def analyse_container(video_path: str) -> dict:
 
     if fmt_result.returncode != 0:
         return {
-            "error": f"ffprobe failed: {fmt_result.stderr}",
+            # -v error (not quiet) so this actually carries a diagnostic;
+            # under -v quiet this string was always "ffprobe failed: ".
+            "error": f"ffprobe failed: {fmt_result.stderr.strip() or 'no diagnostic; the file may be unreadable or not a video'}",
             "video_path": video_path,
             "seek_reliable": False,
             "boundaries": []
@@ -71,7 +91,7 @@ def analyse_container(video_path: str) -> dict:
 
     # ── 2. Packet stream — timestamp discontinuities ──────────────────────────
     pkt_cmd = [
-        "ffprobe", "-v", "quiet",
+        "ffprobe", "-v", "error",
         "-select_streams", "v:0",
         "-show_packets",
         "-show_entries", "packet=pts_time,dts_time,duration_time,flags",

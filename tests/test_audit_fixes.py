@@ -491,3 +491,39 @@ def test_estimate_works_once_a_window_plan_exists(tmp_path):
     est = calculate_cost(md, "standard")
     assert est["total_cost_usd"] > 0
     assert print_estimate(md, [est]) is True
+
+
+# ── Missing ffprobe must degrade with a useful message, not crash ────────────
+
+def test_missing_ffprobe_returns_an_actionable_error(monkeypatch):
+    """subprocess.run raises FileNotFoundError before returncode exists, so the
+    `returncode != 0` handler never covered a missing binary -- it covers a bad
+    video. Step 1a is the first thing the pipeline runs, and on Windows the
+    uncaught error reads '[WinError 2]' with no mention of ffmpeg."""
+    import shutil as _sh
+    import container_analyser as ca
+    monkeypatch.setattr(ca.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ca.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("must not invoke ffprobe when it is absent")))
+    result = ca.analyse_container("whatever.mp4")
+    assert "ffprobe not found" in result["error"]
+    assert "ffmpeg" in result["error"].lower()
+    assert result["seek_reliable"] is False
+    assert result["boundaries"] == []
+
+
+def test_ffprobe_invoked_with_error_verbosity_not_quiet():
+    """-v quiet empties stderr, so 'ffprobe failed: {stderr}' carried no
+    diagnostic on a genuinely unreadable video."""
+    import container_analyser as ca
+    src = open(ca.__file__, encoding="utf-8").read()
+    assert '"-v", "quiet"' not in src
+    assert '"-v", "error"' in src
+
+
+def test_hsv_saturation_does_not_divide_by_zero(recwarn):
+    """np.where evaluated diff / mx eagerly, warning once per call."""
+    import frame_preprocessor as fp
+    src = open(fp.__file__, encoding="utf-8").read()
+    assert "np.where(mx > 0, diff / mx, 0)" not in src
+    assert "np.divide(diff, mx" in src

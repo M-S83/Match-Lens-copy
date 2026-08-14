@@ -120,7 +120,10 @@ def kit_colour_presence(img: "Image.Image", hsv_ranges: list) -> float:
     h[rmax] = (60 * ((g[rmax] - b[rmax]) / diff[rmax]) % 360)
     h[gmax] = (60 * ((b[gmax] - r[gmax]) / diff[gmax]) + 120)
     h[bmax] = (60 * ((r[bmax] - g[bmax]) / diff[bmax]) + 240)
-    s = np.where(mx > 0, diff / mx, 0)
+    # np.where evaluates both branches eagerly, so diff / mx divided by
+    # zero for every mx == 0 element before the result was discarded --
+    # correct output, but a RuntimeWarning on every call.
+    s = np.divide(diff, mx, out=np.zeros_like(diff, dtype=float), where=mx > 0)
     v = mx
 
     # Convert ranges from 0-255 to 0-1 / 0-360

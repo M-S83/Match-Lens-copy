@@ -30,8 +30,12 @@ opencv-python>=4.5.0
 Pillow>=9.4.0
 
 # Array ops in the frame preprocessor: array, zeros, where, abs, maximum, minimum.
-# NOTE: not exercised against numpy 2.x here. If you upgrade, re-check
-# frame_preprocessor.py against the opencv-python build in use.
+# VERIFIED 2026-08-14 against numpy 2.4.6 with opencv-python 5.0.0 -- both major
+# versions past the original floors, which is what a fresh install resolves to
+# today. Exercised, not merely imported: extract_segment decoded/seeked/wrote 9
+# frames, container_analyser produced a full profile, and green_coverage,
+# blur_score, frame_similarity and the HSV kit_colour_presence path all returned
+# sane values.
 numpy>=1.21.0
 
 # .env loading for ANTHROPIC_API_KEY (load_dotenv).

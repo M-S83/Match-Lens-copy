@@ -40,6 +40,7 @@ components contributed.
 | F8 | `generate_flagged_moments.py` (deleted) | Defaulted `source_type` to the literal `"broadcast_fixed_wide"` and printed it as fact in the report footer, contradicting the runner's `"veo_ball_tracking"` default for the same field. **Resolved by removing the report entirely** — flagged moments are now folded into the tactical and opposition reports. |
 | F9 | `cost_estimator.py` `print_estimate` | Priced a match against **zero windows** on a cold directory, because every per-window cost scales with `total_windows` from `window_plan.json`. Printed ~$0.73 against a real $8.75 for the same video — a 12x understatement that exited 0 and read as success, then persisted it to `cost_estimate.json`. Now refuses: `ESTIMATE UNAVAILABLE`, exit 2, `estimate_available: false`. **Found by a dry run on real footage, not by static analysis.** |
 | F7 | `deep_skill_metrics.py` `calculation_basis` | Published formulas the code did not implement (`60/40` while computing `80/20`; `/12` while dividing by `4`). Basis strings are now generated from the same constants the arithmetic uses. |
+| F11 | `pipeline_state.py` `init_state` | A guard that read as protection and was not. It refused to overwrite existing state only when some window had `3a == "complete"` — but while the first 3a batch is in flight it is submitted and **already paid for** with nothing complete, so the count is 0, the guard did not fire, and `batch_ids` was reset to `{}`. The batch ID is the only handle on that work, so a bare re-run after an early crash destroyed a batch already charged for — and the hole sat exactly where the loss is largest (3a is ~$4.41 of a $12.81 standard run). Now holds whenever `batch_ids` is non-empty, names the batches it is protecting, and states what deleting the state file would cost. **Found by verifying a claim made to the operator rather than assuming it.** |
 | F10 | `window_plan.py` Step 1c container read | Printed **"Container: clean -- no boundary snapping needed"** when the container analysis had *failed*. It read `boundary_timestamps_s` with a `[]` default, and an error profile carries no such key, so a container nobody could analyse was reported as verified clean — absent input rendered as a legitimate negative finding. Now distinguishes analysed-and-clean, analysed-with-joins, and not-analysed; only the first may claim "clean". **Found by running the pipeline head end to end, not by static analysis.** |
 
 Each is covered by a regression test (`tests/test_audit_fixes.py`,
@@ -61,6 +62,28 @@ fallback already caught. Deleting it changed no behaviour. It passed review by
 looking correct, and no amount of reading would have shown otherwise — only
 reintroducing the defect and watching the suite stay green did. Mutation-check
 new guards, not just new metrics.
+
+**A third family: absent *mechanism* reading as present.** The first two are
+about what a report says. This one is about what the system is believed to do.
+Two instances, hours apart:
+
+- `init_state`'s guard (F11) looked like protection against clobbering paid
+  work and was not, for the one state that matters.
+- An operator was told the runner "stops at a cost gate before it spends
+  anything." No `input()` exists anywhere in the paid path. The estimate
+  prints and execution continues straight into the run. The gate was
+  remembered, not read.
+
+This family is the most dangerous of the three, because it reaches a person as
+a **promise** rather than a number, and a promise is acted on without being
+checked. A wrong metric gets questioned by a coach who knows the match; a
+wrong assurance about spending does not get questioned at all.
+
+It is also the cheapest to catch. `grep -n "input(" pipeline_runner_v2.py`
+settled it in one command. **Before telling anyone the system will or will not
+do something, grep for the mechanism.** A remembered safeguard is not evidence
+of a safeguard, and the more confident the memory the less likely it is to be
+checked.
 
 ---
 

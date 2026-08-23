@@ -863,3 +863,109 @@ def test_force_re_extracts_over_a_partial_set(tmp_path):
         os.remove(str(md / "frames" / frame_name(s)))
     assert _run_step1(md, "--force").returncode == 0
     assert _run_step1(md).returncode == 0        # verified complete again
+
+
+# ── verify_existing message text must not overstate ──────────────────────────
+
+def _manifest_dir(tmp_path, **payload):
+    import json as _json
+    from extract_frames import MANIFEST
+    d = tmp_path / "frames"
+    d.mkdir(exist_ok=True)
+    (d / MANIFEST).write_text(_json.dumps(payload), encoding="utf-8")
+    return str(d)
+
+
+def test_interrupted_manifest_is_not_reported_as_deleted_files(tmp_path):
+    """complete:false with a matching count is an unfinished run, not tampering.
+
+    Both conditions shared one message, so an interrupted extraction printed
+    the same count twice and blamed a deletion that never happened -- sending
+    the reader after a file nobody removed.
+    """
+    from extract_frames import verify_existing
+    d = _manifest_dir(tmp_path, complete=False, written=3)
+    ok, msg = verify_existing(d, ["a", "b", "c"], None)
+    assert ok is False
+    assert "did not finish" in msg
+    assert "deleted" not in msg.lower() or "Nothing was deleted" in msg
+
+
+def test_count_mismatch_is_reported_as_a_changed_directory(tmp_path):
+    from extract_frames import verify_existing
+    d = _manifest_dir(tmp_path, complete=True, written=10)
+    ok, msg = verify_existing(d, ["a", "b", "c"], None)
+    assert ok is False
+    assert "added or removed" in msg
+
+
+@needs_cv2
+def test_over_count_passes_without_claiming_the_counts_match(tmp_path):
+    """The check is a floor, so 'matching' would overstate it.
+
+    OpenCV reports avg_frame_rate; a container whose r_frame_rate differs
+    yields a count one apart (7387 vs 7386 on Gorleston v Tilbury). The floor
+    is what stops that difference refusing a complete extraction -- but a
+    count above the floor is not equal to it, and must not say it is.
+    """
+    from extract_frames import expected_frame_count, verify_existing
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    expected = expected_frame_count(video)
+
+    ok, msg = verify_existing(str(tmp_path), ["f"] * (expected + 3), video)
+    assert ok is True
+    assert "matching" not in msg
+    assert str(expected) in msg
+
+    ok, msg = verify_existing(str(tmp_path), ["f"] * expected, video)
+    assert ok is True and "matching" in msg
+
+
+@needs_cv2
+def test_floor_not_equality_survives_an_fps_reporting_difference(tmp_path):
+    """Guards against someone tightening >= to ==.
+
+    Equality would make the guard depend on which frame rate the container
+    reports, turning a one-frame difference into a refused run.
+    """
+    from extract_frames import expected_frame_count, verify_existing
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    expected = expected_frame_count(video)
+    ok, _ = verify_existing(str(tmp_path), ["f"] * (expected + 1), video)
+    assert ok is True, "one frame over the floor must not refuse"
+
+
+@needs_cv2
+def test_a_killed_extraction_leaves_an_incomplete_manifest(tmp_path, monkeypatch):
+    """The manifest is staked before decoding, not written only at the end.
+
+    Written only at the end, a killed run leaves no manifest at all and its
+    frames are judged on count alone -- which passes whenever the shortfall
+    happens to be zero, or whenever the video is no longer reachable.
+    """
+    import json as _json
+    import extract_frames
+    from extract_frames import MANIFEST
+
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    out = tmp_path / "out"
+
+    calls = {"n": 0}
+    real_imwrite = extract_frames.cv2.imwrite
+
+    def dying_imwrite(*a, **k):
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise KeyboardInterrupt("simulated kill mid-extraction")
+        return real_imwrite(*a, **k)
+
+    monkeypatch.setattr(extract_frames.cv2, "imwrite", dying_imwrite)
+    with pytest.raises(KeyboardInterrupt):
+        extract_frames.extract_1fps(video, str(out))
+
+    man = _json.loads((out / MANIFEST).read_text(encoding="utf-8"))
+    assert man["complete"] is False
+
+    ok, msg = extract_frames.verify_existing(
+        str(out), ["f"] * 3, video)
+    assert ok is False and "did not finish" in msg

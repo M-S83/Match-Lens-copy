@@ -55,6 +55,17 @@ def frame_name(sec: int) -> str:
     return f"frame_{m:02d}m{s:02d}s.jpg"
 
 
+def _write_manifest(out_dir: str, payload: dict) -> None:
+    """Record extraction state in frames/. Never fatal: a missing manifest
+    degrades to the count check, which is weaker but not wrong."""
+    try:
+        with open(os.path.join(out_dir, MANIFEST), "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+    except OSError as e:
+        print(f"  [WARN]  could not write {MANIFEST}: {e}. A later run will "
+              f"fall back to counting frames against the video.")
+
+
 def extract_1fps(video_path: str, out_dir: str,
                  jpeg_quality: int = JPEG_QUALITY) -> dict:
     """
@@ -86,6 +97,14 @@ def extract_1fps(video_path: str, out_dir: str,
     else:
         print(f"  Video:    {fps:.3f} fps, frame count unavailable from container")
     print(f"  Writing:  {out_dir}")
+
+    # Stake the manifest before decoding, so a run killed part-way leaves
+    # complete:false behind. Written only at the end, an interrupted run
+    # leaves no manifest at all and its frames are judged purely on count --
+    # which passes whenever the shortfall happens to be zero, or whenever the
+    # video is no longer reachable to count against.
+    _write_manifest(out_dir, {"complete": False, "written": 0,
+                              "video": os.path.abspath(video_path)})
 
     started      = time.monotonic()
     index        = 0     # index of the frame grab() is about to consume
@@ -143,17 +162,13 @@ def extract_1fps(video_path: str, out_dir: str,
               "failed_seconds": failed_reads, "fps": fps,
               "duration_s": duration}
 
-    # A manifest so a later run can tell a COMPLETE extraction from an
-    # interrupted one. Without it the only available signal is "some frames
-    # exist", and seconds that legitimately failed to decode are
-    # indistinguishable from seconds never reached.
-    try:
-        with open(os.path.join(out_dir, MANIFEST), "w", encoding="utf-8") as f:
-            json.dump({**result, "video": os.path.abspath(video_path),
-                       "complete": True}, f, indent=2)
-    except OSError as e:
-        print(f"  [WARN]  could not write {MANIFEST}: {e}. A later run cannot "
-              f"verify this extraction was complete.")
+    # Overwrite the staked manifest, marking the extraction finished. This is
+    # what lets a later run tell a COMPLETE extraction from an interrupted
+    # one; without it the only signal is "some frames exist", and seconds that
+    # legitimately failed to decode are indistinguishable from seconds never
+    # reached.
+    _write_manifest(out_dir, {**result, "video": os.path.abspath(video_path),
+                              "complete": True})
     return result
 
 
@@ -190,13 +205,21 @@ def verify_existing(out_dir: str, existing: list, video_path: str | None) -> tup
         try:
             with open(mpath, encoding="utf-8") as f:
                 man = json.load(f)
-            if man.get("complete") and man.get("written") == len(existing):
-                return True, (f"{len(existing)} frames, extraction recorded "
-                              f"complete")
-            return False, (
-                f"{len(existing)} frames on disk but the manifest records "
-                f"{man.get('written')} written. The directory has changed "
-                f"since extraction.")
+            # Two distinct failures. Sharing one message made an unfinished
+            # extraction report "the directory has changed", printing the same
+            # count twice and sending the reader after a file nobody deleted.
+            if not man.get("complete"):
+                return False, (
+                    f"{len(existing)} frames, but the manifest records an "
+                    f"extraction that did not finish. Nothing was deleted -- "
+                    f"the run was interrupted before it wrote every frame.")
+            if man.get("written") != len(existing):
+                return False, (
+                    f"{len(existing)} frames on disk but the manifest records "
+                    f"{man.get('written')} written. Frames have been added or "
+                    f"removed since extraction.")
+            return True, (f"{len(existing)} frames, extraction recorded "
+                          f"complete")
         except (OSError, json.JSONDecodeError):
             pass        # unreadable manifest -- fall through to the count check
 
@@ -210,8 +233,19 @@ def verify_existing(out_dir: str, existing: list, video_path: str | None) -> tup
         return True, (f"{len(existing)} frames; the container reports no "
                       f"usable fps or frame count, so completeness cannot be "
                       f"verified. Proceeding on the frames present.")
-    if len(existing) >= expected:
+    # A floor, deliberately, not equality. OpenCV reports the container's
+    # avg_frame_rate, and for a video whose r_frame_rate differs the two
+    # yield counts one apart -- Gorleston v Tilbury gives 7387 from 29.99678
+    # and 7386 from 30/1. Requiring equality would let that one-frame
+    # difference refuse a complete extraction. Only a genuine shortfall
+    # refuses; do not tighten this to ==.
+    if len(existing) == expected:
         return True, f"{len(existing)} frames, matching the video's {expected}"
+    if len(existing) > expected:
+        # "matching" would overstate a >= test: these counts are not equal.
+        return True, (f"{len(existing)} frames, {len(existing) - expected} "
+                      f"above the {expected} this video yields at 1fps -- "
+                      f"clear of the floor, so not an interrupted extraction")
     return False, (
         f"{len(existing)} frames but this video yields {expected} at 1fps -- "
         f"{expected - len(existing)} missing. This looks like an interrupted "

@@ -969,3 +969,57 @@ def test_a_killed_extraction_leaves_an_incomplete_manifest(tmp_path, monkeypatch
     ok, msg = extract_frames.verify_existing(
         str(out), ["f"] * 3, video)
     assert ok is False and "did not finish" in msg
+
+
+@needs_cv2
+def test_staked_manifest_records_no_frame_count(tmp_path, monkeypatch):
+    """A staked manifest has written nothing, so it must not report a count.
+
+    "written": 0 is a legitimate-looking zero standing in for a count that
+    does not exist: after a kill at frame 2337 it reads 0 beside 2337 files
+    on disk. Nothing consumes it, which is exactly why it would survive to
+    mislead a later reader. Absent, not zero.
+    """
+    import json as _json
+    import extract_frames
+    from extract_frames import MANIFEST
+
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    out = tmp_path / "out"
+
+    def die(*a, **k):
+        raise KeyboardInterrupt("simulated kill")
+
+    monkeypatch.setattr(extract_frames.cv2, "imwrite", die)
+    with pytest.raises(KeyboardInterrupt):
+        extract_frames.extract_1fps(video, str(out))
+
+    man = _json.loads((out / MANIFEST).read_text(encoding="utf-8"))
+    assert man["complete"] is False
+    assert "written" not in man, (
+        "the staked manifest reports a frame count it has not established")
+    # Everything it does carry must be true at stake time.
+    assert man["fps"] == pytest.approx(SYNTH_FPS)
+    assert man["source_frames"] == SYNTH_FRAMES
+
+
+@needs_cv2
+def test_complete_manifest_without_a_count_falls_back_to_the_video(tmp_path):
+    """A missing field establishes nothing; it is not evidence of a mismatch."""
+    import json as _json
+    from extract_frames import MANIFEST, expected_frame_count, verify_existing
+
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    expected = expected_frame_count(video)
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    (frames / MANIFEST).write_text(_json.dumps({"complete": True}),
+                                   encoding="utf-8")
+
+    ok, msg = verify_existing(str(frames), ["f"] * expected, video)
+    assert ok is True
+    assert "added or removed" not in msg      # not reported as tampering
+    assert str(expected) in msg               # checked against the video
+
+    ok, msg = verify_existing(str(frames), ["f"] * (expected - 2), video)
+    assert ok is False and "missing" in msg

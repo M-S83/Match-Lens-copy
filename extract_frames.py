@@ -103,8 +103,19 @@ def extract_1fps(video_path: str, out_dir: str,
     # leaves no manifest at all and its frames are judged purely on count --
     # which passes whenever the shortfall happens to be zero, or whenever the
     # video is no longer reachable to count against.
-    _write_manifest(out_dir, {"complete": False, "written": 0,
-                              "video": os.path.abspath(video_path)})
+    # No "written" key. A staked manifest has written nothing yet, and
+    # "written": 0 is a legitimate-looking zero standing in for a count that
+    # does not exist -- after a kill at frame 2337 it would read 0 beside 2337
+    # files on disk. Nothing consumes it today, which is exactly why it would
+    # survive to mislead. The fields below are all things actually known at
+    # this point; the count is simply absent until there is one.
+    _write_manifest(out_dir, {
+        "complete":      False,
+        "video":         os.path.abspath(video_path),
+        "fps":           fps,
+        "source_frames": total,
+        "note":          "extraction in progress -- no frame count established",
+    })
 
     started      = time.monotonic()
     index        = 0     # index of the frame grab() is about to consume
@@ -192,6 +203,46 @@ def expected_frame_count(video_path: str) -> int | None:
     return s
 
 
+def _manifest_verdict(mpath: str, existing: list):
+    """Verdict from the extraction manifest, or None if it establishes nothing.
+
+    Returning None rather than raising keeps "the manifest cannot answer this"
+    a value the caller handles, not an exception caught alongside genuine I/O
+    errors. That distinction is testable; exception-as-control-flow was not --
+    deleting the missing-count branch changed no behaviour, because the
+    KeyError it avoided was caught by the same handler and fell through the
+    same way.
+    """
+    if not os.path.exists(mpath):
+        return None
+    try:
+        with open(mpath, encoding="utf-8") as f:
+            man = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None                     # unreadable -- check against the video
+
+    # Two distinct failures. Sharing one message made an unfinished extraction
+    # report "the directory has changed", printing the same count twice and
+    # sending the reader after a file nobody deleted.
+    if not man.get("complete"):
+        return False, (
+            f"{len(existing)} frames, but the manifest records an extraction "
+            f"that did not finish. Nothing was deleted -- the run was "
+            f"interrupted before it wrote every frame.")
+
+    written = man.get("written")
+    if written is None:
+        # Complete, but no count recorded. A missing field establishes
+        # nothing; it is not evidence of a mismatch.
+        return None
+    if written != len(existing):
+        return False, (
+            f"{len(existing)} frames on disk but the manifest records "
+            f"{written} written. Frames have been added or removed since "
+            f"extraction.")
+    return True, f"{len(existing)} frames, extraction recorded complete"
+
+
 def verify_existing(out_dir: str, existing: list, video_path: str | None) -> tuple:
     """Decide whether an existing frames/ may be treated as a finished Step 1.
 
@@ -200,28 +251,9 @@ def verify_existing(out_dir: str, existing: list, video_path: str | None) -> tup
     extraction skipped exactly as confidently as a complete one, and the
     shortfall surfaced only as a quietly shorter analysis.
     """
-    mpath = os.path.join(out_dir, MANIFEST)
-    if os.path.exists(mpath):
-        try:
-            with open(mpath, encoding="utf-8") as f:
-                man = json.load(f)
-            # Two distinct failures. Sharing one message made an unfinished
-            # extraction report "the directory has changed", printing the same
-            # count twice and sending the reader after a file nobody deleted.
-            if not man.get("complete"):
-                return False, (
-                    f"{len(existing)} frames, but the manifest records an "
-                    f"extraction that did not finish. Nothing was deleted -- "
-                    f"the run was interrupted before it wrote every frame.")
-            if man.get("written") != len(existing):
-                return False, (
-                    f"{len(existing)} frames on disk but the manifest records "
-                    f"{man.get('written')} written. Frames have been added or "
-                    f"removed since extraction.")
-            return True, (f"{len(existing)} frames, extraction recorded "
-                          f"complete")
-        except (OSError, json.JSONDecodeError):
-            pass        # unreadable manifest -- fall through to the count check
+    verdict = _manifest_verdict(os.path.join(out_dir, MANIFEST), existing)
+    if verdict is not None:
+        return verdict
 
     if not video_path or not os.path.exists(video_path):
         return True, (f"{len(existing)} frames; no manifest and the source "

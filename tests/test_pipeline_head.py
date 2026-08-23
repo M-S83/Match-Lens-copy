@@ -160,8 +160,11 @@ def test_extraction_selects_the_same_frames_as_skillmd(tmp_path):
                         [cv2.IMWRITE_JPEG_QUALITY, 80])
     cap.release()
 
-    a = sorted(os.listdir(str(mine)))
-    b = sorted(os.listdir(str(theirs)))
+    # Frames only: extract_1fps also writes an extraction manifest.
+    def _frames(d):
+        return sorted(p for p in os.listdir(str(d)) if p.startswith("frame_"))
+
+    a, b = _frames(mine), _frames(theirs)
     assert a == b and a, f"filename sets differ: {a} vs {b}"
     for n in a:
         x = cv2.imread(os.path.join(str(mine), n))
@@ -732,3 +735,131 @@ def test_match_state_category_flip_before_the_first_goal():
     nxt = calc_match_state(950, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
     assert nxt["match_state"] == "home_winning"
     assert nxt["score_home"] == 1
+
+
+# ── Step 1's skip guard: presence is not completeness ────────────────────────
+
+def _match_dir_with_video(tmp_path):
+    import json as _json
+    md = tmp_path / "m"
+    md.mkdir()
+    _write_synthetic_video(md / "synth.mp4")
+    (md / "match_config.json").write_text(_json.dumps(
+        {"match": "x", "home_team": "A", "away_team": "B",
+         "video_path": "synth.mp4"}), encoding="utf-8")
+    return md
+
+
+def _run_step1(md, *extra):
+    return subprocess.run(
+        [sys.executable, os.path.join(REPO, "extract_frames.py"), str(md),
+         *extra], capture_output=True, text=True)
+
+
+@needs_cv2
+def test_expected_frame_count_matches_a_real_extraction(tmp_path):
+    from extract_frames import expected_frame_count, extract_1fps
+    video = _write_synthetic_video(tmp_path / "synth.mp4")
+    assert expected_frame_count(video) == extract_1fps(
+        video, str(tmp_path / "out"))["written"]
+
+
+def test_expected_frame_count_is_none_when_unknowable(tmp_path):
+    """Unverifiable must be None, never a number that looks like an answer."""
+    from extract_frames import expected_frame_count
+    bad = tmp_path / "nope.mp4"
+    bad.write_bytes(b"not a video")
+    assert expected_frame_count(str(bad)) is None
+
+
+@needs_cv2
+def test_complete_extraction_writes_a_manifest(tmp_path):
+    import json as _json
+    from extract_frames import MANIFEST
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    man = _json.loads((md / "frames" / MANIFEST).read_text(encoding="utf-8"))
+    assert man["complete"] is True
+    assert man["written"] == _expected_seconds()
+
+
+@needs_cv2
+def test_second_run_skips_a_verified_extraction(tmp_path):
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    r = _run_step1(md)
+    assert r.returncode == 0
+    assert "SKIP" in r.stdout
+
+
+@needs_cv2
+def test_partial_extraction_is_not_skipped_as_though_complete(tmp_path):
+    """The defect: `if existing and not --force` treated 1 frame like 7,000.
+
+    An interrupted extraction skipped exactly as confidently as a finished
+    one, and the shortfall surfaced only as a quietly shorter analysis.
+    """
+    from extract_frames import frame_name
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    for s in (3, 4, 5):
+        os.remove(str(md / "frames" / frame_name(s)))
+
+    r = _run_step1(md)
+    assert r.returncode != 0, "a partial frames/ was accepted as complete"
+    assert "SKIP" not in r.stdout
+
+
+@needs_cv2
+def test_partial_extraction_detected_without_a_manifest(tmp_path):
+    """Frames predating the manifest still get checked, against the video."""
+    from extract_frames import MANIFEST, frame_name
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    os.remove(str(md / "frames" / MANIFEST))          # pre-manifest extraction
+    for s in (3, 4, 5):
+        os.remove(str(md / "frames" / frame_name(s)))
+
+    r = _run_step1(md)
+    assert r.returncode != 0
+    assert "missing" in (r.stdout + r.stderr)
+
+
+@needs_cv2
+def test_complete_extraction_without_a_manifest_still_skips(tmp_path):
+    """Mike's case: frames from before the manifest existed, video present."""
+    from extract_frames import MANIFEST
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    os.remove(str(md / "frames" / MANIFEST))
+    r = _run_step1(md)
+    assert r.returncode == 0
+    assert "SKIP" in r.stdout
+
+
+@needs_cv2
+def test_unverifiable_extraction_says_so_rather_than_claiming_complete(tmp_path):
+    """No manifest and no video: proceed, but never imply it was checked."""
+    import json as _json
+    from extract_frames import MANIFEST
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    os.remove(str(md / "frames" / MANIFEST))
+    os.remove(str(md / "synth.mp4"))
+    (md / "match_config.json").write_text(_json.dumps(
+        {"match": "x", "home_team": "A", "away_team": "B"}), encoding="utf-8")
+
+    r = _run_step1(md)
+    assert r.returncode == 0
+    assert "cannot be verified" in r.stdout
+
+
+@needs_cv2
+def test_force_re_extracts_over_a_partial_set(tmp_path):
+    from extract_frames import frame_name
+    md = _match_dir_with_video(tmp_path)
+    assert _run_step1(md).returncode == 0
+    for s in (3, 4, 5):
+        os.remove(str(md / "frames" / frame_name(s)))
+    assert _run_step1(md, "--force").returncode == 0
+    assert _run_step1(md).returncode == 0        # verified complete again

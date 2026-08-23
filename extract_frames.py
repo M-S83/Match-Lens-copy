@@ -35,6 +35,7 @@ frame_MMmSSs.jpg by hand), so a silent gap becomes a silently shorter analysis.
 """
 import argparse
 import glob
+import json
 import os
 import sys
 import time
@@ -45,6 +46,7 @@ from frame_extraction import find_source_video
 
 JPEG_QUALITY = 80        # SKILL.md Step 1; bursts use 90 for spatial detail
 PROGRESS_EVERY = 500     # frames between progress lines
+MANIFEST = "extraction.json"   # written into frames/ on a completed run
 
 
 def frame_name(sec: int) -> str:
@@ -137,9 +139,83 @@ def extract_1fps(video_path: str, out_dir: str,
               f"reports {duration:.0f}s. {duration - expected:.0f}s of footage "
               f"produced no frames.")
 
-    return {"written": written, "attempted": expected,
-            "failed_seconds": failed_reads, "fps": fps,
-            "duration_s": duration}
+    result = {"written": written, "attempted": expected,
+              "failed_seconds": failed_reads, "fps": fps,
+              "duration_s": duration}
+
+    # A manifest so a later run can tell a COMPLETE extraction from an
+    # interrupted one. Without it the only available signal is "some frames
+    # exist", and seconds that legitimately failed to decode are
+    # indistinguishable from seconds never reached.
+    try:
+        with open(os.path.join(out_dir, MANIFEST), "w", encoding="utf-8") as f:
+            json.dump({**result, "video": os.path.abspath(video_path),
+                       "complete": True}, f, indent=2)
+    except OSError as e:
+        print(f"  [WARN]  could not write {MANIFEST}: {e}. A later run cannot "
+              f"verify this extraction was complete.")
+    return result
+
+
+def expected_frame_count(video_path: str) -> int | None:
+    """How many 1fps frames a complete extraction of this video yields.
+
+    None when the container will not report fps or frame count -- in which
+    case completeness cannot be checked and must not be assumed either way.
+    """
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return None
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    if not fps or fps <= 0 or total <= 0:
+        return None
+    s = 0
+    while int(s * fps) < total:
+        s += 1
+    return s
+
+
+def verify_existing(out_dir: str, existing: list, video_path: str | None) -> tuple:
+    """Decide whether an existing frames/ may be treated as a finished Step 1.
+
+    Returns (ok, message). The old guard was `if existing and not --force`,
+    which treats one frame and seven thousand identically: an interrupted
+    extraction skipped exactly as confidently as a complete one, and the
+    shortfall surfaced only as a quietly shorter analysis.
+    """
+    mpath = os.path.join(out_dir, MANIFEST)
+    if os.path.exists(mpath):
+        try:
+            with open(mpath, encoding="utf-8") as f:
+                man = json.load(f)
+            if man.get("complete") and man.get("written") == len(existing):
+                return True, (f"{len(existing)} frames, extraction recorded "
+                              f"complete")
+            return False, (
+                f"{len(existing)} frames on disk but the manifest records "
+                f"{man.get('written')} written. The directory has changed "
+                f"since extraction.")
+        except (OSError, json.JSONDecodeError):
+            pass        # unreadable manifest -- fall through to the count check
+
+    if not video_path or not os.path.exists(video_path):
+        return True, (f"{len(existing)} frames; no manifest and the source "
+                      f"video is not available, so completeness cannot be "
+                      f"verified. Proceeding on the frames present.")
+
+    expected = expected_frame_count(video_path)
+    if expected is None:
+        return True, (f"{len(existing)} frames; the container reports no "
+                      f"usable fps or frame count, so completeness cannot be "
+                      f"verified. Proceeding on the frames present.")
+    if len(existing) >= expected:
+        return True, f"{len(existing)} frames, matching the video's {expected}"
+    return False, (
+        f"{len(existing)} frames but this video yields {expected} at 1fps -- "
+        f"{expected - len(existing)} missing. This looks like an interrupted "
+        f"extraction.")
 
 
 def main() -> int:
@@ -162,15 +238,30 @@ def main() -> int:
 
     out_dir  = os.path.join(match_dir, "frames")
     existing = glob.glob(os.path.join(out_dir, "frame_*.jpg"))
-    if existing and not args.force:
-        print(f"  [SKIP] {len(existing)} frames already in {out_dir}")
-        print(f"         Pass --force to re-extract.")
-        return 0
 
     try:
         video = args.video or find_source_video(match_dir)
     except FileNotFoundError as e:
-        print(f"  [FAIL] {e}", file=sys.stderr)
+        if not existing:
+            print(f"  [FAIL] {e}", file=sys.stderr)
+            return 1
+        video = None            # frames exist; verify what can be verified
+
+    if existing and not args.force:
+        ok, msg = verify_existing(out_dir, existing, video)
+        if ok:
+            print(f"  [SKIP] {msg}")
+            print(f"         Pass --force to re-extract.")
+            return 0
+        print(f"  [FAIL] {msg}", file=sys.stderr)
+        print(f"         Re-run with --force to extract the whole match again.",
+              file=sys.stderr)
+        print(f"         Skipping now would hand every downstream step a "
+              f"silently shorter match.", file=sys.stderr)
+        return 1
+
+    if video is None:
+        print(f"  [FAIL] no source video found for {match_dir}", file=sys.stderr)
         return 1
 
     try:

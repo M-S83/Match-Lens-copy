@@ -708,3 +708,27 @@ def test_match_state_defaults_are_the_degenerate_case_only():
     from window_plan import calc_match_state
     ms = calc_match_state(700, GT_GOALS, "Gorleston")
     assert ms["score_home"] == 1        # 6' -> second 360 < 700
+
+
+def test_match_state_category_flip_before_the_first_goal():
+    """Window 2 is the consequential one: level -> home_winning, not 2-0 -> 1-0.
+
+    Match 05:00-10:00 starts at video second 650. The 6th-minute goal lands at
+    video 710, inside the window, so the window opens level. The old
+    arithmetic placed it at match-second 360, before 650, and opened the
+    window at 1-0.
+
+    Every other mislabelled window shifted a scoreline within
+    "home_winning"; this one changed the state category itself, which is the
+    field deep_skill_metrics groups by (match_state_by_window) and the one an
+    agent reads as the framing of the passage.
+    """
+    from window_plan import calc_match_state
+    ms = calc_match_state(650, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert ms["match_state"] == "level"
+    assert (ms["score_home"], ms["score_away"]) == (0, 0)
+
+    # The goal is inside this window, so the NEXT window opens 1-0.
+    nxt = calc_match_state(950, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert nxt["match_state"] == "home_winning"
+    assert nxt["score_home"] == 1

@@ -53,6 +53,15 @@ tends to assume the happy path has already run. Both surfaced within minutes of
 executing the pipeline from a bare directory. That is the cheapest known way to
 find this category, and it is worth repeating on any new step.
 
+**A second family, found a different way.** Every entry in this file is absent
+*data* reading as present. `extract_frames.verify_existing` produced one that
+was absent *logic* reading as present: a guard written specifically to stop a
+missing count being reported as a mismatch, which raised the same exception the
+fallback already caught. Deleting it changed no behaviour. It passed review by
+looking correct, and no amount of reading would have shown otherwise — only
+reintroducing the defect and watching the suite stay green did. Mutation-check
+new guards, not just new metrics.
+
 ---
 
 ## OPEN — verified, still fabricating
@@ -77,6 +86,7 @@ These were confirmed against the code during the audit and are **not yet fixed**
 | O15 | `accumulator.py:1318-1319` | `windows_appeared += 1` sits inside the per-observation loop, so 4 observations in one window count as 4 windows. `synthesis_agent.py:990` gates the tendency table on `>= 3`. | A single-window burst published as a cross-match tendency. |
 | O16 | `deep_skill_metrics.py:963` / `:948` | `SOURCE_GLOBAL_CAP.get(source_type, 0.5)` and `EVIDENCE_TIER_CAP.get(worst_tier, 0.4)` silently supply a confidence cap for source types and tiers not in the table — including `broadcast_fixed_wide`, which `source_profiler` rewrites to `unknown`. | Every metric's published confidence. |
 | O17 | `build_readiness_check.py:121, 240` | `classification_confidence` and `avg_confidence` default to `0.0` when the source profile or metrics file is absent — indistinguishable from a genuine zero-confidence measurement, and published alongside `report_ready: true`. | `confidence_reliability_report.json` |
+| O18 | `extract_frames.py` `verify_existing` | A manifest with `complete: true` but no `written` key falls through to the message *"no manifest and the source video is not available"*. There **is** a manifest; it simply cannot answer. Same family as F10 and the two message defects fixed above — a message asserting more than the check established — one notch smaller, and operator-facing text only. Logged deliberately rather than fixed: it cannot execute on any directory whose frames predate the manifest, and the next round of hardening here has lower value than running a match. | Step 1 terminal output. |
 
 ---
 

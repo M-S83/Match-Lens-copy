@@ -31,18 +31,27 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 def parse_time(text: str) -> int:
-    """'67m00s' | '67:00' | '67m' | '4020' -> seconds."""
+    """'1:11:09' | '67m00s' | '67:00' | '67m' | '4020' -> seconds.
+
+    H:MM:SS is here because that is what a video player's scrubber shows, and
+    it is the form an operator reads boundaries off. Two-part input stays
+    MM:SS: '67:00' is 67 minutes, matching the labels window_plan prints.
+    Three-part input is unambiguous, so it is the only form read as hours.
+    """
     t = str(text).strip().lower()
     if re.fullmatch(r"\d+", t):
         return int(t)
-    m = re.fullmatch(r"(?:(\d+)m)?(?:(\d+)s?)?", t)
+    m = re.fullmatch(r"(\d+):([0-5]?\d):([0-5]?\d)", t)          # H:MM:SS
+    if m:
+        return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+    m = re.fullmatch(r"(?:(\d+)m)?(?:(\d+)s?)?", t)              # 67m00s / 67m
     if m and (m.group(1) or m.group(2)):
         return int(m.group(1) or 0) * 60 + int(m.group(2) or 0)
-    m = re.fullmatch(r"(\d+):(\d+)", t)
+    m = re.fullmatch(r"(\d+):([0-5]?\d)", t)                     # MM:SS
     if m:
         return int(m.group(1)) * 60 + int(m.group(2))
     raise argparse.ArgumentTypeError(
-        f"cannot read {text!r} as a time. Use 67m00s, 67:00, or 4020.")
+        f"cannot read {text!r} as a time. Use 1:11:09, 71m09s, 71:09, or 4269.")
 
 
 def frame_name(sec: int) -> str:

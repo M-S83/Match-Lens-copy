@@ -586,3 +586,50 @@ def test_boundaries_override_is_read_before_any_api_client_is_built():
     override_at = src.index("boundaries_override")
     client_at = src.index("anthropic.Anthropic()")
     assert override_at < client_at
+
+
+def test_parse_time_accepts_video_player_hmmss():
+    """H:MM:SS is what a scrubber shows and what an operator reads off."""
+    from contact_sheet import parse_time
+    assert parse_time("1:11:09") == 4269
+    assert parse_time("2:01:22") == 7282
+    assert parse_time("0:05:50") == 350
+
+
+def test_parse_time_keeps_two_part_input_as_minutes_seconds():
+    """'67:00' must stay 67 minutes, not 67 hours.
+
+    window_plan prints MM:SS labels, so a two-part reading of hours would
+    silently reinterpret every timestamp the pipeline itself displays.
+    """
+    from contact_sheet import parse_time
+    assert parse_time("67:00") == 4020
+    assert parse_time("5:50") == 350
+    assert parse_time("54:05") == 3245
+
+
+def test_parse_time_rejects_impossible_clock_fields():
+    import argparse as _ap
+    from contact_sheet import parse_time
+    for bad in ("1:61:00", "1:11:75", "67:99"):
+        with pytest.raises((_ap.ArgumentTypeError, ValueError)):
+            parse_time(bad)
+
+
+def test_operator_confirmed_boundaries_for_gorleston_tilbury_validate():
+    """The timestamps read off the footage, as a worked example.
+
+    KO 5:50, HT 54:05, KO2 1:11:09, FT 2:01:22 -- a 48m first half, a 17m
+    break and a 50m second half. Recorded because two separate Step 1b runs
+    proposed a 2m break and a 65-70m second half at high confidence, and this
+    is the shape that actually closes against a 123m06s video.
+    """
+    from contact_sheet import parse_time
+    from set_boundaries import check
+    ko1, ht, ko2, ft = (parse_time(t) for t in
+                        ("5:50", "54:05", "1:11:09", "2:01:22"))
+    assert (ko1, ht, ko2, ft) == (350, 3245, 4269, 7282)
+    assert check(ko1, ht, ko2, ft, duration_s=7386) == []
+    assert ht - ko1 == 2895        # 48m15s
+    assert ko2 - ht == 1024        # 17m04s
+    assert ft - ko2 == 3013        # 50m13s

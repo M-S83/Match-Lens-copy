@@ -1023,3 +1023,66 @@ def test_complete_manifest_without_a_count_falls_back_to_the_video(tmp_path):
 
     ok, msg = verify_existing(str(frames), ["f"] * (expected - 2), video)
     assert ok is False and "missing" in msg
+
+
+# ── init_state must not discard paid, in-flight batches ──────────────────────
+
+def _state_with(tmp_path, batch_ids=None, complete_windows=0):
+    import json as _json
+    from pipeline_state import init_state, STATE_FILE
+    wins = ["W01", "W02", "W03"]
+    init_state(str(tmp_path), "m", wins)
+    p = tmp_path / STATE_FILE
+    s = _json.loads(p.read_text(encoding="utf-8"))
+    s["batch_ids"] = batch_ids or {}
+    for w in wins[:complete_windows]:
+        s["windows"][w]["3a"] = "complete"
+    p.write_text(_json.dumps(s), encoding="utf-8")
+    return p, wins
+
+
+def _batch_ids(p):
+    import json as _json
+    return _json.loads(p.read_text(encoding="utf-8")).get("batch_ids")
+
+
+def test_init_state_keeps_an_in_flight_batch_with_nothing_complete(tmp_path):
+    """The defect: the guard counted only 3a-complete windows.
+
+    While the first 3a batch is in flight it is submitted and paid for and
+    nothing is complete, so the count is 0, the guard did not fire, and a
+    bare re-run reset batch_ids to {}. The batch ID is the only handle on
+    that work -- losing it loses the money, and 3a is the biggest single
+    step of a standard run.
+    """
+    from pipeline_state import init_state
+    p, wins = _state_with(tmp_path, batch_ids={"3a": "msgbatch_PAID"})
+    init_state(str(tmp_path), "m", wins)
+    assert _batch_ids(p) == {"3a": "msgbatch_PAID"}
+
+
+def test_init_state_still_keeps_state_with_completed_windows(tmp_path):
+    from pipeline_state import init_state
+    p, wins = _state_with(tmp_path, batch_ids={"3a": "msgbatch_PAID"},
+                          complete_windows=1)
+    init_state(str(tmp_path), "m", wins)
+    assert _batch_ids(p) == {"3a": "msgbatch_PAID"}
+
+
+def test_init_state_initialises_when_there_is_nothing_to_lose(tmp_path):
+    """No batches and no completed windows: a fresh init is correct."""
+    from pipeline_state import init_state
+    p, wins = _state_with(tmp_path, batch_ids={})
+    st = init_state(str(tmp_path), "m", wins)
+    assert st["batch_ids"] == {}
+    assert all(w["3a"] == "pending" for w in st["windows"].values())
+
+
+def test_init_state_names_the_batches_it_is_protecting(tmp_path, capsys):
+    from pipeline_state import init_state
+    _state_with(tmp_path, batch_ids={"3a": "msgbatch_A", "3b": "msgbatch_B"})
+    init_state(str(tmp_path), "m", ["W01", "W02", "W03"])
+    out = capsys.readouterr().out
+    assert "already paid for" in out
+    assert "--resume" in out
+    assert "3a" in out and "3b" in out

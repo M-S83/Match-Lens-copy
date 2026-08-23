@@ -95,9 +95,26 @@ def init_state(match_dir: str, match_name: str, windows: list,
         # Don't overwrite a state that has completed windows
         done = sum(1 for w in existing.get("windows", {}).values()
                    if w.get("3a") == "complete")
-        if done > 0:
-            print(f"  [STATE] Existing state found: {done} windows complete.")
-            print(f"  [STATE] Use resume_state() to continue from checkpoint.")
+        # ...nor one holding batch IDs. Completed windows alone was the wrong
+        # test: while the first 3a batch is in flight it has been submitted and
+        # PAID FOR, and nothing is complete yet, so `done` is 0 and the guard
+        # did not fire. A bare re-run after an early crash then reset
+        # batch_ids to {} -- and the batch ID is the only handle on that work,
+        # so the money was simply gone. The hole sat exactly where the loss is
+        # largest: 3a is the single biggest step of a standard run.
+        batches = existing.get("batch_ids") or {}
+        if done > 0 or batches:
+            if done > 0:
+                print(f"  [STATE] Existing state found: {done} windows complete.")
+            if batches:
+                print(f"  [STATE] {len(batches)} batch(es) recorded: "
+                      f"{', '.join(sorted(batches))}. These are submitted and "
+                      f"already paid for.")
+            print(f"  [STATE] Keeping it. Re-run with --resume to continue "
+                  f"from this checkpoint.")
+            print(f"  [STATE] To genuinely start over, delete "
+                  f"{STATE_FILE} first -- any in-flight batch is then "
+                  f"unreachable and its cost is lost.")
             return existing
 
     state = {

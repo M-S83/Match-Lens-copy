@@ -42,18 +42,43 @@ def seconds_to_label(s: float, offset: float = 0.0) -> str:
 
 # -- Match state calculation ---------------------------------------------------
 
+def goal_minute_to_video_seconds(elapsed_min: float, ko_1h_s: float,
+                                 ko_2h_s: float) -> float:
+    """Map a match minute to a position in the video.
+
+    Match minutes run 0-45+ in the first half and resume at 45 after the
+    break, so the two halves need different offsets. Without this the only
+    footage the mapping is correct for is a video that starts exactly at
+    kickoff and contains no half-time break.
+    """
+    if elapsed_min <= 45:
+        return ko_1h_s + elapsed_min * 60
+    return ko_2h_s + (elapsed_min - 45) * 60
+
+
 def calc_match_state(window_start_s: float, goals: list,
-                     home_team: str) -> dict:
+                     home_team: str, ko_1h_s: float = 0.0,
+                     ko_2h_s: float | None = None) -> dict:
     """
     Calculate the score and match state at the start of a window.
 
     Fix 33b: home/away framing only -- no single-team perspective.
 
     Args:
-        window_start_s: window start in video seconds
+        window_start_s: window start in VIDEO seconds
         goals:          list of goal dicts from match_config.json
-                        each has: time.elapsed (minutes), team.name
+                        each has: time.elapsed (MATCH minutes), team.name
         home_team:      the home team name
+        ko_1h_s:        1H kickoff in video seconds
+        ko_2h_s:        2H kickoff in video seconds (defaults to ko_1h_s + 45m)
+
+    The two arguments above are the whole point. `window_start_s` is a video
+    position and `time.elapsed` is a match minute; comparing them directly
+    treats a match minute as though it were a video second, which is only
+    true when kickoff is at video 0:00 and there is no half-time break. On
+    Gorleston v Tilbury (kickoff 5m50s, 17m04s break) that mislabelled 6 of
+    21 windows -- window 9 covers match 40:00-45:00 and was tagged 2-0 when
+    the second goal had not yet been scored.
 
     Returns:
         {
@@ -65,10 +90,12 @@ def calc_match_state(window_start_s: float, goals: list,
     """
     score_home = 0
     score_away = 0
+    if ko_2h_s is None:
+        ko_2h_s = ko_1h_s + 2700
 
     for goal in goals:
         goal_minute = goal.get("time", {}).get("elapsed", 0)
-        goal_second = goal_minute * 60
+        goal_second = goal_minute_to_video_seconds(goal_minute, ko_1h_s, ko_2h_s)
         if goal_second < window_start_s:
             team_raw = goal.get("team", "")
             team = team_raw.get("name", "") if isinstance(team_raw, dict) else str(team_raw)
@@ -292,7 +319,7 @@ def build_window_plan(match_dir: str,
         # Tag match state at start of this window
         if goals is not None:
             w["match_state"] = calc_match_state(
-                w["start_s"], goals, home_team
+                w["start_s"], goals, home_team, ko_1h, ko_2h
             )
         else:
             w["match_state"] = {"match_state": "unknown"}

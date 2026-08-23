@@ -633,3 +633,78 @@ def test_operator_confirmed_boundaries_for_gorleston_tilbury_validate():
     assert ht - ko1 == 2895        # 48m15s
     assert ko2 - ht == 1024        # 17m04s
     assert ft - ko2 == 3013        # 50m13s
+
+
+# ── window_plan match_state: match minutes vs video seconds ──────────────────
+
+GT_KO1, GT_KO2 = 350, 4269          # Gorleston v Tilbury, read off the footage
+GT_GOALS = [
+    {"time": {"elapsed": 6},  "team": {"name": "Gorleston"}},
+    {"time": {"elapsed": 45}, "team": {"name": "Gorleston"}},
+    {"time": {"elapsed": 59}, "team": {"name": "Gorleston"}},
+]
+
+
+def test_goal_minute_maps_through_the_right_half_offset():
+    from window_plan import goal_minute_to_video_seconds as m
+    # 1H: offset by kickoff only.
+    assert m(0, GT_KO1, GT_KO2) == 350
+    assert m(6, GT_KO1, GT_KO2) == 710            # 11m50s into the video
+    assert m(45, GT_KO1, GT_KO2) == 3050          # 50m50s
+    # 2H: the clock resumes at 45, so the break must be skipped, not counted.
+    assert m(46, GT_KO1, GT_KO2) == 4329
+    assert m(59, GT_KO1, GT_KO2) == 5109          # 85m09s
+
+
+def test_match_state_does_not_treat_match_minutes_as_video_seconds():
+    """The defect: goal_minute * 60 compared against a video-second window start.
+
+    Window 9 covers match 40:00-45:00 (video 45m50s). Only the 6th-minute goal
+    has been scored by then. The old arithmetic put the 45th-minute goal at
+    video second 2700, before the window's 2750, and tagged the window 2-0.
+    """
+    from window_plan import calc_match_state
+    ms = calc_match_state(2750, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert (ms["score_home"], ms["score_away"]) == (1, 0)
+    assert ms["goals_before_window"] == 1
+
+
+def test_match_state_at_second_half_kickoff():
+    """Window 11 is match 45:00-50:00. Two goals stand; the third is at 59'."""
+    from window_plan import calc_match_state
+    ms = calc_match_state(GT_KO2, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert (ms["score_home"], ms["score_away"]) == (2, 0)
+
+
+def test_match_state_counts_the_third_goal_only_after_it_happens():
+    from window_plan import calc_match_state
+    before = calc_match_state(5100, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    after = calc_match_state(5169, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert before["score_home"] == 2        # 85m00s, goal lands at 85m09s
+    assert after["score_home"] == 3         # 86m09s
+
+
+def test_match_state_ignores_the_pre_match_footage():
+    """At 1H kickoff nothing has been scored, whatever the video offset."""
+    from window_plan import calc_match_state
+    ms = calc_match_state(GT_KO1, GT_GOALS, "Gorleston", GT_KO1, GT_KO2)
+    assert (ms["score_home"], ms["score_away"], ms["match_state"]) == (0, 0, "level")
+
+
+def test_match_state_attributes_away_goals_to_the_away_side():
+    from window_plan import calc_match_state
+    goals = [{"time": {"elapsed": 10}, "team": {"name": "Tilbury"}}]
+    ms = calc_match_state(2750, goals, "Gorleston", GT_KO1, GT_KO2)
+    assert (ms["score_home"], ms["score_away"]) == (0, 1)
+    assert ms["match_state"] == "away_winning"
+
+
+def test_match_state_defaults_are_the_degenerate_case_only():
+    """With no kickoff supplied the old behaviour is the default.
+
+    That is correct only for a video that starts at kickoff with no break, so
+    it must stay an explicit fallback rather than the path real matches take.
+    """
+    from window_plan import calc_match_state
+    ms = calc_match_state(700, GT_GOALS, "Gorleston")
+    assert ms["score_home"] == 1        # 6' -> second 360 < 700

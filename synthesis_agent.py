@@ -289,6 +289,20 @@ axis rule contradicting it. Compute the grade from the two axes above and
 write the letter. Never emit the word "grade" or the token
 [grade] in your output — it appears only in these examples.
 
+DUEL OUTCOMES ARE COUNTS, NEVER RATES. duel_record gives won,
+lost, contested and observed per player. Report those numbers.
+Do not divide them, do not write a percentage, and do not call
+any of them a "win rate".
+
+The denominator is not what it looks like. A player is listed on
+a duel he was VISIBLE in, not one he contested, and this source
+observed roughly half the duels in the match -- the half near the
+ball and inside the sampled frames. A percentage over that is
+false precision on a biased sample. "Nine duels won, none lost"
+carries the same tactical meaning as "82%" and is true.
+duel_record.coverage states the observed share; quote it whenever
+you report duel counts.
+
 NOT-MEASURED FIELDS: field_variance.not_measured lists fields that
 returned the same value in every window of the match. A field that
 answers the same thing whether it was shown minute 3 or minute 87
@@ -850,6 +864,17 @@ def build_input_bundle(match_dir: str) -> dict:
     variance        = _field_variance(match_dir, running_summary)
     running_summary = _fv.redact(running_summary, variance)
 
+    # Duel outcomes as counts, with the per-event winner removed so a rate
+    # cannot be recomputed from the raw array. The published report divided
+    # wins by times-VISIBLE and called it a win rate -- 82% for a player whose
+    # record was 9 won, 0 lost, 2 contested -- over a sample that captured
+    # roughly half the match's duels.
+    import duel_record as _dr
+    duels_record = _dr.build(running_summary,
+                             live_play_minutes=_live_play_minutes(match_dir))
+    running_summary = {**running_summary,
+                       "duels": _dr.strip_outcomes(running_summary.get("duels") or [])}
+
     return {
         "match_config":       _load_json(os.path.join(match_dir, "match_config.json")),
         "window_plan":        _load_json(os.path.join(match_dir, "window_plan.json")),
@@ -880,6 +905,7 @@ def build_input_bundle(match_dir: str) -> dict:
         # never measured. Computed here rather than read, so it can never be
         # stale relative to the running_summary it describes.
         "field_variance":     variance,
+        "duel_record":        duels_record,
         # v3 Step 7: player_summary_cards surfaced under a stable key.
         # Empty dict on absence (graceful-degradation contract); the
         # report-writing prompts detect the empty case and fall back to
@@ -887,6 +913,21 @@ def build_input_bundle(match_dir: str) -> dict:
         "player_summary_cards": _load_json_optional(
             os.path.join(match_dir, "player_summary_cards.json")),
     }
+
+
+def _live_play_minutes(match_dir: str):
+    """Minutes of actual football, for stating how much of it was observed."""
+    path = os.path.join(match_dir, "match_boundaries.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            b = (json.load(f).get("boundaries") or {})
+        s = {k: float(b[k]["seconds"]) for k in
+             ("ko_1h", "ht_whistle", "ko_2h", "ft_whistle")}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return ((s["ht_whistle"] - s["ko_1h"]) + (s["ft_whistle"] - s["ko_2h"])) / 60.0
 
 
 def _field_variance(match_dir: str, running_summary: dict) -> dict:

@@ -237,18 +237,25 @@ def calc_aerial_dominance(summary: dict) -> dict:
     duels = summary.get("duels", [])
     if not duels:
         return {}
-    # Fix 33b: home/away naming.
-    home_team = summary.get("home_team", "")
+    # The duels[] winner field carries the KIT token, not the club name, so
+    # the rate must be asked for by kit. Passing summary["home_team"]
+    # ("Gorleston") matched nothing and made `won` zero on every match.
+    HOME_KIT = "home_kit"
     aerials = [d for d in duels if d.get("type") == "aerial"]
     ground  = [d for d in duels if d.get("type") in ("ground", "tackle")]
 
     def win_rate(duel_list, team):
+        # The winner field carries "home_kit", "away_kit" or "contested".
+        # It has never carried "opposition", so the old denominator counted
+        # only the duels this team won -- making every team's rate exactly
+        # 100%. Same key-mismatch family as pressing.avg_score.
+        other = "away_kit" if team == "home_kit" else "home_kit"
         won  = sum(1 for d in duel_list if d.get("winner") == team)
-        total = sum(1 for d in duel_list if d.get("winner") in (team, "opposition"))
+        total = sum(1 for d in duel_list if d.get("winner") in (team, other))
         return round(won / max(total, 1), 2) if total else None
 
-    aerial_rate = win_rate(aerials, home_team)
-    ground_rate = win_rate(ground,  home_team)
+    aerial_rate = win_rate(aerials, HOME_KIT)
+    ground_rate = win_rate(ground,  HOME_KIT)
     return {
         "aerial_duels_total":    len(aerials),
         "aerial_win_rate":       aerial_rate,

@@ -17,14 +17,23 @@ failure in an annotated frame, not against a hunch:
   * Skin is hue 5-20 at saturation 60-110; a red kit is the same hue at
     saturation 155-220. Without a saturation floor an assistant referee in
     black scored as a red player on twenty pixels of forearm.
+  * Black is not a uniform for one role. The referee, both assistants AND
+    much of the management team wear it on this footage, so nothing can be
+    inferred from the colour beyond "not a kit". The saturation floor drops
+    all of them, which is right, but it means every one of them lands in
+    "other" -- see the note on coverage below.
   * A yellow keeper collides with grass in HUE (27 vs 30) but not in VALUE
     (grass sits near 57). Gated on brightness rather than discarded.
   * Gorleston's shirts carry white stripes down the front, which dilute the
     shirt band. Shorts and socks are solid, so all three are sampled.
-  * Substitutes sit in the dugout with shirts across their laps -- exactly
-    the right red, always present, always one team's colours, always on the
-    same side. Colour cannot exclude them; the perspective ground plane can,
-    partially. See KNOWN LIMITS.
+  * Substitutes are in tracksuits and TRAINING BIBS, not match shirts. A bib
+    is a large, saturated, single-colour surface -- the best target on the
+    frame for a hue classifier -- and it is worn by someone who is not
+    playing. Gorleston's keeper is orange and the warm-up bibs on this
+    footage are orange, so a substitute jogging the touchline is a perfect
+    match for the home keeper anchor. Colour cannot separate them at all;
+    only position can, and the ground plane does it only partially. See
+    KNOWN LIMITS 2 and 4.
 
 WHAT IT REFUSES TO DO
 ---------------------
@@ -48,6 +57,19 @@ KNOWN LIMITS (do not build on these without reading)
    view.
 3. NON-PLAY FRAMES MUST BE EXCLUDED BY THE CALLER using match_boundaries.
    A half-time frame returns a confident, meaningless split.
+4. TRAINING BIBS ARE INDISTINGUISHABLE FROM KIT. A substitute warming up
+   along the touchline in an orange bib is, to this module, a Gorleston
+   goalkeeper: same hue, larger and more saturated than a real shirt, and
+   moving, so the fixed-position reasoning that partially handles the dugout
+   does not apply. There is no colour fix. What there is instead is a bound:
+   a side has one goalkeeper, so two home_gk labels in one frame means at
+   least one is wrong. FrameResult.keeper_counts reports per side and
+   team_detect marks such a frame invalid.
+5. COVERAGE IS NOT ACCURACY. Officials and management are correctly refused
+   and land in "other", which sits in coverage's denominator. A frame with
+   the referee, two assistants and three staff in shot cannot exceed roughly
+   70% however well the classifier works. Read a fall in coverage as a
+   question, not a verdict.
 """
 from dataclasses import dataclass, field
 
@@ -103,6 +125,25 @@ class FrameResult:
         c = {}
         for _, lab, _ in self.labels:
             c[lab] = c.get(lab, 0) + 1
+        return c
+
+    @property
+    def keeper_counts(self):
+        """How many people were labelled as each side's goalkeeper.
+
+        `counts` collapses both keepers to "keeper", which hides the error
+        this exists to catch: a side has one goalkeeper, so two home_gk in
+        one frame means at least one is not a goalkeeper. On this footage
+        the likely cause is a substitute in an orange training bib, which is
+        the same hue as the Gorleston keeper and cannot be told from it by
+        colour. See KNOWN LIMITS 4.
+        """
+        c = {}
+        for _, lab, v in self.labels:
+            if lab == "keeper" and isinstance(v, dict):
+                raw = v.get("_label")
+                if raw:
+                    c[raw] = c.get(raw, 0) + 1
         return c
 
     @property
@@ -284,7 +325,16 @@ def kit_votes(hsv, box, mask, grass_hue, grass_v, live, needs_value):
     return out
 
 
-def label_from_votes(v, live):
+def label_from_votes(v, live, collapse=True):
+    """Which anchor this person's pixels belong to.
+
+    collapse=True returns "keeper" for either goalkeeper, which is what the
+    counts and the overlay want. collapse=False returns the anchor itself
+    (home_gk / away_gk), which is what validation wants: a side has one
+    goalkeeper, so two home_gk in a frame is a detectable error -- an orange
+    training bib being the likely cause. Collapsing before the check throws
+    that away, because "2 keepers" is legitimate when both goals are in shot.
+    """
     if not v:
         return "other"
     total = max(1, v["_total"])
@@ -294,7 +344,9 @@ def label_from_votes(v, live):
     best = max(scores, key=scores.get)
     rest = max([x for n, x in scores.items() if n != best] or [0])
     if scores[best] / total >= MIN_SHARE and scores[best] >= MARGIN * max(1, rest):
-        return "keeper" if best.endswith("_gk") else best
+        if best.endswith("_gk"):
+            return "keeper" if collapse else best
+        return best
     return "other"
 
 
@@ -368,6 +420,10 @@ def classify_frame(image_bgr, detections, match_config):
             labelled.append(((x1, y1, x2, y2), "off_pitch", None))
             continue
         v = kit_votes(hsv, (x1, y1, x2, y2), mask, gh, gv, live, needs_value)
+        # The raw anchor travels inside the votes dict so it survives
+        # apply_ground_plane, which rewrites the label list.
+        if isinstance(v, dict) and v:
+            v["_label"] = label_from_votes(v, live, collapse=False)
         labelled.append(((x1, y1, x2, y2), label_from_votes(v, live), v))
 
     labelled, plane = apply_ground_plane(labelled)

@@ -28,6 +28,8 @@ FRAME_RE = re.compile(r"frame_(\d+)m(\d+)s\.(?:jpg|jpeg|png)$", re.I)
 # more is not noisy, it is provably wrong, and averaging it in launders a
 # known error into a plausible-looking median. Counted and reported instead.
 MAX_ON_PITCH = 11
+# Per side, not per frame. Both keepers can legitimately be in one wide shot.
+MAX_KEEPERS_PER_SIDE = 1
 MAX_INVALID_RATE = 0.10   # above this the medians are withheld entirely
 
 LABEL_COLOURS = {"home": (0, 255, 0), "away": (0, 0, 255), "keeper": (0, 255, 255),
@@ -131,13 +133,24 @@ def main():
                 dets.append((box, m))
         res = classify_frame(img, dets, mc)
         c = res.counts
+        # A side fields eleven, and exactly one of them is the goalkeeper.
+        # The keeper bound is not pedantry: an orange training bib is the
+        # same hue as the Gorleston keeper and cannot be separated from it by
+        # colour, so a substitute warming up along the touchline reads as a
+        # second home goalkeeper. Checking the collapsed "keeper" count
+        # cannot catch it -- two keepers is legitimate when both goals are in
+        # shot -- so the check is per side.
+        gk = res.keeper_counts
         valid = (c.get("home", 0) <= MAX_ON_PITCH
-                 and c.get("away", 0) <= MAX_ON_PITCH)
+                 and c.get("away", 0) <= MAX_ON_PITCH
+                 and all(n <= MAX_KEEPERS_PER_SIDE for n in gk.values()))
         rows.append({
             "video_s": t,
             "valid": valid,
             "home": c.get("home", 0), "away": c.get("away", 0),
-            "keeper": c.get("keeper", 0), "unidentified": c.get("other", 0),
+            "keeper": c.get("keeper", 0),
+            "keeper_by_side": gk,
+            "unidentified": c.get("other", 0),
             "rejected_off_field": c.get("off_field", 0) + c.get("off_pitch", 0),
             "coverage": round(res.coverage, 3),
         })

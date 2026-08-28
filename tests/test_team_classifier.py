@@ -173,3 +173,81 @@ def test_rejected_detections_are_outside_the_coverage_denominator():
 
 def test_coverage_of_nothing_is_zero_not_an_error():
     assert _lbl().coverage == 0.0
+
+
+# ── training bibs: the hazard the operator named ──────────────────────────
+#
+# Substitutes wear tracksuits and TRAINING BIBS, not match shirts. A bib is a
+# large, saturated, single-colour surface -- the best target on the frame for
+# a hue classifier -- worn by someone who is not playing. The warm-up bibs on
+# this footage are orange and Gorleston's keeper is orange, so a substitute
+# jogging the touchline is a perfect match for the home keeper anchor.
+#
+# Colour cannot separate them. What can is a bound: a side has one
+# goalkeeper. Two home_gk in a frame means at least one is wrong.
+
+def _gk_config():
+    return {"home_kit": "green shirts", "away_kit": "red shirts",
+            "home_gk_kit": "orange shirt", "away_gk_kit": "yellow shirt"}
+
+
+def test_the_keeper_anchor_is_kept_for_validation():
+    """collapse=False must name which keeper won, not just "keeper".
+
+    Collapsing before the check throws the error away, because two keepers
+    in one frame is legitimate when both goals are in shot.
+    """
+    live = {"home": GREEN, "away": RED, "home_gk": 12.0}
+    votes = {"_total": 1000, "home": 5, "away": 10, "home_gk": 700}
+    assert label_from_votes(votes, live) == "keeper"
+    assert label_from_votes(votes, live, collapse=False) == "home_gk"
+
+
+def test_an_outfield_label_is_unaffected_by_collapse():
+    live = {"home": GREEN, "away": RED}
+    votes = {"_total": 1000, "home": 700, "away": 10}
+    assert label_from_votes(votes, live) == "home"
+    assert label_from_votes(votes, live, collapse=False) == "home"
+
+
+def test_keeper_counts_are_reported_per_side():
+    from team_classifier import FrameResult
+    def det(raw):
+        return ((0, 0, 10, 40), "keeper", {"_total": 100, "_label": raw})
+    fr = FrameResult(grass_hue=30.0, labels=[det("home_gk"), det("home_gk"), det("away_gk")])
+    assert fr.keeper_counts == {"home_gk": 2, "away_gk": 1}
+    assert fr.counts["keeper"] == 3, (
+        "the collapsed count cannot distinguish two home keepers from one "
+        "of each -- which is why keeper_counts exists")
+
+
+def test_both_goals_in_shot_is_not_an_error():
+    """One keeper per side is fine even though two keepers are in frame."""
+    from team_classifier import FrameResult
+    from team_detect import MAX_KEEPERS_PER_SIDE
+    fr = FrameResult(grass_hue=30.0, labels=[
+        ((0, 0, 10, 40), "keeper", {"_total": 100, "_label": "home_gk"}),
+        ((0, 0, 10, 40), "keeper", {"_total": 100, "_label": "away_gk"})])
+    assert all(n <= MAX_KEEPERS_PER_SIDE for n in fr.keeper_counts.values())
+
+
+def test_a_bib_wearing_substitute_makes_the_frame_invalid():
+    """The failure this bound exists for, as a count rather than a pixel test."""
+    from team_classifier import FrameResult
+    from team_detect import MAX_KEEPERS_PER_SIDE
+    fr = FrameResult(grass_hue=30.0, labels=[
+        ((0, 0, 10, 40), "keeper", {"_total": 100, "_label": "home_gk"}),
+        ((0, 0, 10, 40), "keeper", {"_total": 100, "_label": "home_gk"})])
+    assert fr.keeper_counts == {"home_gk": 2}
+    assert not all(n <= MAX_KEEPERS_PER_SIDE
+                   for n in fr.keeper_counts.values())
+
+
+def test_officials_and_staff_land_in_other_not_in_a_team():
+    """Black is worn by the referee, both assistants and much of the
+    management team, so it identifies nobody. All of them must refuse a
+    team label rather than being split between the two."""
+    live = {"home": GREEN, "away": RED}
+    assert label_from_votes({}, live) == "other"
+    assert label_from_votes({"_total": 1000, "home": 3, "away": 4},
+                            live) == "other"

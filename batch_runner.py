@@ -287,7 +287,6 @@ def collect_results(batch_id: str, match_dir: str,
         "3b": "player",
         "3d_event": "event",
         "3d_setpiece": "setpiece",
-        "3d_recovery": "recovery",
     }
     suffix = suffix_map.get(step, step)
 

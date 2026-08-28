@@ -41,7 +41,13 @@ STATE_FILE = "pipeline_state.json"
 
 # Steps belonging to an analysis window. A window's identity is minted by
 # window_plan.json and by nothing else.
-WINDOW_STEPS  = ["3a", "3b", "3d_event", "3d_recovery", "3e_merge"]
+#
+# 3d_recovery was removed on 2026-08-28. It sat here, in batch_runner's
+# suffix map and in cost_estimator, but no phase in the runner ever
+# submitted it -- it reported 0/21 pending on every run and priced work
+# that could not happen. reconcile_with_plan strips it from existing state
+# files as an unknown step.
+WINDOW_STEPS  = ["3a", "3b", "3d_event", "3e_merge"]
 
 # Steps belonging to a BURST, which is not a window. A burst is a short
 # high-fps re-run anchored on one queued event; its id is
@@ -217,7 +223,9 @@ def reconcile_with_plan(match_dir: str, state: dict, plan_window_ids) -> dict:
       * entries absent from the plan are burst records in the wrong
         namespace -- moved to state["bursts"] with their burst-step statuses
         intact, so completed burst work is never re-paid;
-      * burst-only steps left on genuine window records are dropped;
+      * steps left on genuine window records that are not WINDOW_STEPS are
+        dropped -- burst steps mis-routed here, and retired steps such as
+        3d_recovery that older state files still carry;
       * plan windows missing from state are added as pending.
     """
     plan_ids = [str(w) for w in plan_window_ids]
@@ -243,7 +251,10 @@ def reconcile_with_plan(match_dir: str, state: dict, plan_window_ids) -> dict:
 
     stripped = 0
     for rec in windows.values():
-        for s in BURST_STEPS:
+        # Anything that is not a window step is stripped: burst steps that
+        # were mis-routed here, and retired steps such as 3d_recovery that
+        # older state files still carry.
+        for s in [k for k in list(rec) if k not in WINDOW_STEPS]:
             if rec.pop(s, None) is not None:
                 stripped += 1
 
@@ -258,8 +269,8 @@ def reconcile_with_plan(match_dir: str, state: dict, plan_window_ids) -> dict:
                   f"namespace ({', '.join(sorted(orphans)[:4])}"
                   f"{'...' if len(orphans) > 4 else ''}).")
         if stripped:
-            print(f"  [STATE] Dropped {stripped} burst-only step entr(ies) "
-                  f"from window records.")
+            print(f"  [STATE] Dropped {stripped} step entr(ies) that are not "
+                  f"window steps from window records.")
         if missing:
             print(f"  [STATE] Added {len(missing)} plan window(s) absent from "
                   f"state: {', '.join(missing[:6])}"

@@ -159,12 +159,6 @@ def calculate_cost(match_data: dict, quality: str = "standard") -> dict:
     steps["3b_player"]     = step_cost("player",     W,   fpw)
     steps["3d_event"]      = step_cost("event",      EW,  evf)
     steps["3d_setpiece"]   = step_cost("setpiece",   SP,  evf // 3)
-    # 3d_recovery is priced at zero because it has no phase in the runner --
-    # nothing submits it. Charging for a step that cannot run inflated every
-    # estimate this tool has produced.
-    steps["3d_recovery"]   = {"windows": 0, "input_tokens": 0,
-                              "output_tokens": 0, "cost_usd": 0.0,
-                              "note": "no runner phase -- never submitted"}
     # Synthesis makes THREE calls: a tactical report and one opposition report
     # per team, not two.
     steps["reports"]       = {"windows": REPORT_CALLS, "cost_usd": round(

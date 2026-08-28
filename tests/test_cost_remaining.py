@@ -110,13 +110,16 @@ def test_skipped_and_failed_windows_are_not_re_charged(tmp_path):
 
 # ── the full-match figure itself was also wrong ──────────────────────────────
 
-def test_recovery_is_not_charged_because_it_cannot_run(tmp_path):
-    """3d_recovery has no phase in the runner. Nothing submits it, and pricing
-    it inflated every estimate this tool has produced."""
+def test_recovery_is_not_a_step_at_all(tmp_path):
+    """3d_recovery had an entry in WINDOW_STEPS, a suffix in batch_runner and a
+    line here -- and no phase in the runner. Nothing ever submitted it, so it
+    showed as 0/21 pending forever and inflated every estimate."""
+    from pipeline_state import WINDOW_STEPS
+
     est = calculate_cost(load_match_data(_match(tmp_path)), "full")
 
-    assert est["steps"]["3d_recovery"]["cost_usd"] == 0.0
-    assert "no runner phase" in est["steps"]["3d_recovery"]["note"]
+    assert "3d_recovery" not in est["steps"]
+    assert "3d_recovery" not in WINDOW_STEPS
 
 
 def test_synthesis_is_three_calls_not_two():

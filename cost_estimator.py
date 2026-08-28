@@ -16,15 +16,22 @@ Quality levels:
 """
 
 import json, os, sys, argparse
-from pipeline_accessors import get_window_start_seconds, get_window_end_seconds, get_match_id
+from pipeline_accessors import (get_window_start_seconds, get_window_end_seconds,
+                                get_match_id, get_kickoff_seconds,
+                                match_minute_to_video_s)
 from pipeline_schemas import stamp_schema_version
 
 # ── Token costs (Anthropic API, claude-sonnet-4-5, April 2026) ──────────────
 TOKENS_PER_FRAME = 1568      # standard resolution image
 
+# Measured 2026-08-14 by rendering the real prompts against a live match_config:
+# structural 33,494 chars (~8,370 tokens), player 13,986 chars (~3,496 tokens).
+# The previous 3000/2500 understated structural by 2.8x. That error was partly
+# masked because this module prices at LIST while the runner uses the Batches
+# API at 50% -- two errors pulling opposite ways. Both are now correct.
 PROMPT_TOKENS = {
-    "structural": 3000,
-    "player":     2500,
+    "structural": 8370,
+    "player":     3496,
     "event":      2000,
     "setpiece":   1200,
     "recovery":   800,
@@ -40,13 +47,25 @@ OUTPUT_TOKENS = {
 }
 
 # claude-sonnet-4-5 pricing (per token)
-INPUT_COST_PER_TOKEN  = 3.00  / 1_000_000
-OUTPUT_COST_PER_TOKEN = 15.00 / 1_000_000
+# pipeline_runner_v2 submits every window through the Message Batches API, which
+# is billed at 50% of list. Pricing at list here made every estimate roughly
+# double what was actually charged.
+BATCH_DISCOUNT        = 0.5
+REPORT_CALLS          = 3     # tactical + one opposition report per team
+INPUT_COST_PER_TOKEN  = 3.00  / 1_000_000 * BATCH_DISCOUNT
+OUTPUT_COST_PER_TOKEN = 15.00 / 1_000_000 * BATCH_DISCOUNT
 
 QUALITY_PROFILES = {
-    "economy":      {"frames_per_window": 10, "event_frames": 75,  "label": "Economy (~$6)"},
-    "standard":     {"frames_per_window": 30, "event_frames": 150, "label": "Standard (~$11)"},
-    "full":         {"frames_per_window": 60, "event_frames": 300, "label": "Full quality (~$20)"},
+    # tokens_per_frame follows API_FRAME_W/H in pipeline_runner_v2: frames are
+    # sent at 1024x576, which Anthropic bills at ~786 tokens rather than the
+    # 1568 ceiling a full-HD frame hits. Keep these two in step or every
+    # estimate doubles.
+    "economy":      {"frames_per_window": 10, "event_frames": 75,  "label": "Economy (~$6)",
+                     "tokens_per_frame": 786},
+    "standard":     {"frames_per_window": 30, "event_frames": 150, "label": "Standard (~$11)",
+                     "tokens_per_frame": 786},
+    "full":         {"frames_per_window": 60, "event_frames": 300, "label": "Full quality (~$20)",
+                     "tokens_per_frame": 786},
     "high_density": {"frames_per_window": 90, "event_frames": 90,  "label": "High-density (90fr @ 512×288)",
                      "tokens_per_frame": 170},  # single tile — cheaper than standard
     "full_1fps":    {"frames_per_window": 90, "event_frames": 90,  "label": "Full 1fps (capped at 90fr @ 512×288)",
@@ -73,12 +92,25 @@ def load_match_data(match_dir: str) -> dict:
     sub_minutes  = [s.get("time", {}).get("elapsed", 0) for s in subs]
     event_minutes = set(goal_minutes + sub_minutes)
 
+    # Event minutes are MATCH clock; window start_s/end_s are VIDEO seconds.
+    # This previously compared `get_window_start_seconds(w) / 60` (video
+    # minutes) against `time.elapsed` (match minutes) and so counted the wrong
+    # windows -- billing for event-agent work on windows the runner would never
+    # select. Convert the event minutes into video seconds once, through the
+    # canonical accessor, and compare in a single coordinate system.
+    ko = get_kickoff_seconds(mb) if mb else {}
+    if ko.get("ko_1h") is not None:
+        event_seconds = {match_minute_to_video_s(m, ko) for m in event_minutes
+                         if isinstance(m, (int, float))}
+    else:
+        event_seconds = set()
+
     event_windows = 0
     null_windows  = 0
     for w in windows:
-        t_start = get_window_start_seconds(w) / 60
-        t_end   = get_window_end_seconds(w) / 60
-        if w.get("event_window") or any(t_start <= m <= t_end for m in event_minutes):
+        w_start = get_window_start_seconds(w)
+        w_end   = get_window_end_seconds(w)
+        if w.get("event_window") or any(w_start <= s <= w_end for s in event_seconds):
             event_windows += 1
         # null windows: not event_window and boundary_nearby (data gap proxy)
         if not w.get("event_window") and w.get("boundary_nearby"):
@@ -127,10 +159,17 @@ def calculate_cost(match_data: dict, quality: str = "standard") -> dict:
     steps["3b_player"]     = step_cost("player",     W,   fpw)
     steps["3d_event"]      = step_cost("event",      EW,  evf)
     steps["3d_setpiece"]   = step_cost("setpiece",   SP,  evf // 3)
-    steps["3d_recovery"]   = step_cost("recovery",   NW,  20)
-    steps["reports"]       = {"windows": 2, "cost_usd": round(
-        (PROMPT_TOKENS["report"] * 2 * INPUT_COST_PER_TOKEN +
-         OUTPUT_TOKENS["report"] * 2 * OUTPUT_COST_PER_TOKEN), 2)}
+    # 3d_recovery is priced at zero because it has no phase in the runner --
+    # nothing submits it. Charging for a step that cannot run inflated every
+    # estimate this tool has produced.
+    steps["3d_recovery"]   = {"windows": 0, "input_tokens": 0,
+                              "output_tokens": 0, "cost_usd": 0.0,
+                              "note": "no runner phase -- never submitted"}
+    # Synthesis makes THREE calls: a tactical report and one opposition report
+    # per team, not two.
+    steps["reports"]       = {"windows": REPORT_CALLS, "cost_usd": round(
+        (PROMPT_TOKENS["report"] * REPORT_CALLS * INPUT_COST_PER_TOKEN +
+         OUTPUT_TOKENS["report"] * REPORT_CALLS * OUTPUT_COST_PER_TOKEN), 2)}
 
     total_cost  = round(sum(s.get("cost_usd", 0) for s in steps.values()), 2)
     total_input = sum(s.get("input_tokens", 0) for s in steps.values())
@@ -143,7 +182,84 @@ def calculate_cost(match_data: dict, quality: str = "standard") -> dict:
         "total_input_tokens": total_input,
         "frames_per_window":  fpw,
         "event_frames":       evf,
-        "api_calls_total":    W + W + EW + SP + NW + 2,
+        "api_calls_total":    W + W + EW + SP + REPORT_CALLS,
+    }
+
+
+def estimate_remaining(match_dir: str, match_data: dict,
+                       quality: str = "standard") -> dict:
+    """Cost of the work THIS run will actually do, read from pipeline_state.
+
+    The full-match figure is the wrong number to print before a resumed run,
+    and it is not a harmless over-estimate: it sits directly above "Check
+    balance", so it reads as a spend warning. Four consecutive
+    --resume --force-reports runs were quoted $8.46 and 57 API calls when the
+    real work was three synthesis calls.
+
+    An over-estimate quoted every time teaches the operator to ignore the
+    estimate, which is worse than not having one -- the run where the number
+    matters is the run they have learned to skip.
+
+    Returns None when there is no state, in which case the whole match is
+    genuinely still to pay for and the full figure is the right one.
+    """
+    import json as _json
+    import os as _os
+    state_path = _os.path.join(match_dir, "pipeline_state.json")
+    if not _os.path.exists(state_path):
+        return None
+    with open(state_path, encoding="utf-8") as f:
+        state = _json.load(f)
+    windows = state.get("windows", {}) or {}
+    steps   = state.get("steps", {}) or {}
+    done    = {"complete", "skipped", "failed"}
+
+    def pending(step, only=None):
+        return sum(1 for wid, st in windows.items()
+                   if (only is None or wid in only)
+                   and st.get(step) not in done)
+
+    event_ids, notes = None, []
+    try:
+        with open(_os.path.join(match_dir, "window_plan.json"),
+                  encoding="utf-8") as f:
+            event_ids = {str(w.get("agent_id")) for w in
+                         _json.load(f).get("windows", []) if w.get("event_window")}
+    except (OSError, _json.JSONDecodeError):
+        notes.append("window_plan.json unreadable -- event windows not priced")
+
+    profile = QUALITY_PROFILES[quality]
+    fpw, evf = profile["frames_per_window"], profile["event_frames"]
+    tpf = profile.get("tokens_per_frame", TOKENS_PER_FRAME)
+
+    def cost_of(name, n, frames_each):
+        if n <= 0:
+            return 0.0
+        return ((PROMPT_TOKENS[name] + frames_each * tpf) * n * INPUT_COST_PER_TOKEN
+                + OUTPUT_TOKENS[name] * n * OUTPUT_COST_PER_TOKEN)
+
+    n_struct = pending("3a")
+    n_player = pending("3b")
+    # 3d_event only ever runs on windows the plan flagged. Counting the other
+    # twelve as pending would restore exactly the over-estimate being fixed.
+    n_event  = pending("3d_event", event_ids) if event_ids is not None else 0
+    n_report = 0 if steps.get("3l_synthesis") == "complete" else REPORT_CALLS
+
+    parts = {
+        "3a_structural": (n_struct, cost_of("structural", n_struct, fpw)),
+        "3b_player":     (n_player, cost_of("player",     n_player, fpw)),
+        "3d_event":      (n_event,  cost_of("event",      n_event,  evf)),
+        "reports":       (n_report, PROMPT_TOKENS["report"] * n_report
+                          * INPUT_COST_PER_TOKEN
+                          + OUTPUT_TOKENS["report"] * n_report
+                          * OUTPUT_COST_PER_TOKEN),
+    }
+    return {
+        "cost_usd":  round(sum(c for _, c in parts.values()), 2),
+        "api_calls": sum(n for n, _ in parts.values()),
+        "breakdown": {k: {"calls": n, "cost_usd": round(c, 2)}
+                      for k, (n, c) in parts.items()},
+        "notes": notes,
     }
 
 

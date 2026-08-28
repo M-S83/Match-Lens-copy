@@ -540,6 +540,11 @@ COMPACTNESS_PROSE = {
 }
 
 REST_DEFENCE_PROSE = {
+    # No entry may describe an absence of sightings. "unknown" reaches here
+    # only if a caller bypasses the None check in the emit path; it says so
+    # rather than falling through to the raw category name.
+    "unknown":       "no defensive line shifts were recorded, so rest defence "
+                     "cannot be characterised from this source",
     "very_secure":   "the back line holds its position almost completely after possession changes",
     "secure":        "the back line settles quickly after possession changes with few adjustments required",
     "moderate":      ("roughly one positional adjustment per possession phase -- "
@@ -1157,7 +1162,10 @@ def calc_pressing_intensity(summary):
     pressing = summary.get("pressing_by_window", [])
     scores   = [w.get("avg_score") for w in pressing if w.get("avg_score") is not None]
     if not scores:
-        return 0.0, 0.0, 0, ["suggestive"]
+        # 0.0 would read as "they did not press". No window carried a
+        # reading -- on this source that is usually because the intensity
+        # field was withheld by field_variance, not because nobody pressed.
+        return None, None, 0, ["no_data"]
     avg_10 = round(sum(scores) / len(scores), 2)
     avg_01 = round(avg_10 / 10.0, 2)
     return avg_10, avg_01, len(scores), ["direct"]
@@ -1187,16 +1195,37 @@ def calc_build_up_effectiveness(passes):
 
 def calc_rest_defence_security(summary):
     """
-    Rest-defence security: only backward defensive line shifts indicate vulnerability.
-    Forward shifts (line pushing higher) are tactically positive and not penalised.
+    Rest-defence security: only backward defensive line shifts indicate
+    vulnerability. Forward shifts (line pushing higher) are tactically
+    positive and not penalised.
+
+    ZERO OBSERVATIONS IS NOT ZERO SHIFTS. On the Gorleston match the shifts
+    list was empty in all 21 windows -- the agent recorded no line movement
+    anywhere -- and this function computed 0 backward shifts, 0.0 per window,
+    and a score of 1.0 - (0.0 * 0.25) = a perfect rating. That fed
+    rest_defence_category, which returns "very_secure" below 0.5, which fed
+    REST_DEFENCE_PROSE, which says "the back line holds its position almost
+    completely after possession changes".
+
+    So an empty list became the strongest positive claim in the vocabulary.
+    And it cannot be anything else: rest_defence is downgraded on a
+    ball-following source precisely because a far-side line shift is not in
+    frame. Zero recorded means unobserved, never stationary.
+
+    The count of shifts SEEN is therefore tracked separately from the count
+    that were backward. No sightings at all returns None, and the emit path
+    already suppresses prose on a None -- see the rest_defence branch of
+    metric_prose.
     """
     line_data = summary.get("line_height_by_window", [])
     if not line_data:
-        return 0.0, 0, 0, ["suggestive"]
+        return None, None, 0, ["no_data"]
     windows        = len(line_data)
+    observed       = 0
     total_backward = 0
     for w in line_data:
         for shift in w.get("shifts", []):
+            observed += 1
             if isinstance(shift, dict):
                 from_p = shift.get("from_pct", 0)
                 to_p   = shift.get("to_pct", 0)
@@ -1209,6 +1238,11 @@ def calc_rest_defence_security(summary):
                     total_backward += 1
                 elif not nums:
                     total_backward += 1  # conservative if unparseable
+    if observed == 0:
+        # Not one line shift was recorded in any window. There is nothing to
+        # average, and a rate over no observations is not zero -- it is
+        # absent.
+        return None, None, windows, ["no_data"]
     backward_per_win = round(total_backward / windows, 2) if windows > 0 else 0.0
     score = max(0.0, round(1.0 - (backward_per_win * 0.25), 2))
     return score, backward_per_win, windows, ["repeated_pattern"]
@@ -1274,7 +1308,11 @@ def calc_line_height_range(summary):
 def calc_width_usage(passes):
     sequences    = passes.get("sequences", [])
     if not sequences:
-        return 0.0, 0, ["suggestive"], "none"
+        # The old return was (0.0, 0, ..., "none") -- a score of zero and a
+        # method literally named "none". A report can quote that as "made no
+        # use of the width", which is a strong tactical claim derived from
+        # having observed nothing at all.
+        return None, 0, ["no_data"], None
     wide_keywords = ("left_channel", "right_channel", "left_flank", "right_flank",
                      "left_wide", "right_wide", "wide_left", "wide_right")
     zone_wide = sum(1 for s in sequences
@@ -1510,7 +1548,7 @@ def calc_pattern_reliability(passes):
     """
     sequences = passes.get("sequences", [])
     if not sequences:
-        return 0.0, None, 0, 0, ["suggestive"]
+        return None, None, 0, 0, ["no_data"]
 
     # Try non-baseline first
     non_baseline = [s for s in sequences
@@ -1526,7 +1564,7 @@ def calc_pattern_reliability(passes):
         if s.get("zone_start") and s.get("zone_end")
     )
     if not zone_pairs:
-        return 0.0, None, 0, 0, ["suggestive"]
+        return None, None, 0, 0, ["no_data"]
 
     total          = sum(zone_pairs.values())
     top_pair, top_count = zone_pairs.most_common(1)[0]
@@ -1544,7 +1582,9 @@ def calc_pattern_reliability(passes):
 def calc_build_up_route_diversity(passes):
     sequences = passes.get("sequences", [])
     if not sequences:
-        return 0.0, 0, 0, ["suggestive"]
+        # 0.0 diversity feeds the predictability category, which would call a
+        # match with no observed sequences maximally predictable.
+        return None, 0, 0, ["no_data"]
     zone_pairs = set((s.get("zone_start"), s.get("zone_end"))
                      for s in sequences if s.get("zone_start") and s.get("zone_end"))
     score = round(min(len(zone_pairs) / float(ROUTE_DIVERSITY_CEILING), 1.0), 2)
@@ -2406,7 +2446,11 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
     metrics.append(make_metric("rest_defence_security_score", "match", ["rest_defence"],
         {"avg_backward_shifts_per_window": backward_per_win,
          "category": rest_cat,
-         "summary": f"{backward_per_win} avg backward line shifts ({rest_cat})"},
+         "shifts_observed": backward_per_win is not None,
+         "summary": (f"{backward_per_win} avg backward line shifts ({rest_cat})"
+                     if backward_per_win is not None else
+                     "no defensive line shifts were recorded in any window; "
+                     "rest defence is not reportable from this source")},
         "profile", t, 0.75, w,
         "Average defensive line shifts per possession phase with categorical label",
         traceable_to=["line_height_by_window"]))

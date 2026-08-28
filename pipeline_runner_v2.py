@@ -1861,6 +1861,45 @@ Follow the Step 3d Event Agent schema from SKILL.md.
 """
 
 
+def _lint_report(match_dir: str, filename: str) -> None:
+    """Check a written report against the gates it was written under.
+
+    The bundle handed to the writer is already shaped by
+    result_family_gates and field_variance. Neither can tell whether the
+    writer obeyed them, and prose is where the discipline is actually lost:
+    the Gorleston report carried seven [A] grades and asserted that rest
+    defence "was measured as very secure" twelve lines above a note saying
+    that is exactly what this source cannot show.
+
+    Run at the moment the report is written, so the findings appear in the
+    run log beside the cost rather than being discovered by whoever reads
+    the report last. Non-fatal by design -- a lint problem must not lose a
+    report that has already been paid for -- but never silent.
+    """
+    try:
+        import report_lint
+        findings = report_lint.lint_match(match_dir, filename)
+    except Exception as exc:                       # noqa: BLE001
+        print(f"  [WARN] report_lint could not run on {filename}: {exc}")
+        return
+
+    stem = os.path.splitext(filename)[0]
+    with open(os.path.join(match_dir, f"{stem}.lint.txt"),
+              "w", encoding="utf-8") as fh:
+        fh.write(report_lint.format_findings(findings, filename) + "\n")
+
+    if not findings:
+        print(f"  [LINT] {filename}: nothing to answer for.")
+        return
+    high = sum(1 for f in findings if f.get("severity") == "high")
+    print(f"  [LINT] {filename}: {len(findings)} finding(s), {high} high "
+          f"-- see {stem}.lint.txt")
+    for f in findings[:3]:
+        print(f"         line {f['line']}: {f['check']}")
+    if len(findings) > 3:
+        print(f"         ... and {len(findings) - 3} more")
+
+
 def build_player_action_confirmation_prompt(match_dir: str,
                                               queue_item: dict,
                                               mc: dict,
@@ -3016,6 +3055,7 @@ def run_pipeline(match_dir: str, quality: str = "standard",
                     f.write(report_text)
                 mark_step(match_dir, state, "4a_tactical_report", "complete")
                 print(f"  [OK] tactical_report.md written ({len(report_text):,} chars)")
+                _lint_report(match_dir, "tactical_report.md")
             except Exception as e:
                 mark_step(match_dir, state, "4a_tactical_report", "failed", str(e))
                 print(f"  [FAIL] tactical report: {e}")
@@ -3039,6 +3079,7 @@ def run_pipeline(match_dir: str, quality: str = "standard",
                     f.write(report_text)
                 mark_step(match_dir, state, "4b_opposition_report", "complete")
                 print(f"  [OK] {os.path.basename(out_path)} written ({len(report_text):,} chars)")
+                _lint_report(match_dir, os.path.basename(out_path))
             except Exception as e:
                 mark_step(match_dir, state, "4b_opposition_report", "failed", str(e))
                 print(f"  [FAIL] opposition report: {e}")

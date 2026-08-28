@@ -170,3 +170,82 @@ def test_lint_match_reads_both_config_files(tmp_path):
 def test_missing_config_files_do_not_crash_the_lint(tmp_path):
     (tmp_path / "tactical_report.md").write_text("Anything.", encoding="utf-8")
     assert RL.lint_match(str(tmp_path)) == []
+
+
+# ── the linter has to actually run ────────────────────────────────────────
+#
+# report_filter.py has sat in this repo defining report levels and a prompt
+# builder that nothing imports. A checker nobody calls is worse than no
+# checker: it reads as coverage that does not exist. These tests hold the
+# wiring, not just the logic.
+
+import ast
+import io
+
+RUNNER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "pipeline_runner_v2.py")
+
+
+def _calls_after(source: str, marker_step: str) -> bool:
+    """Is _lint_report called in the same block that marks this step done?"""
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
+        if marker_step in body and "_lint_report" in body:
+            return True
+    return False
+
+
+def test_both_report_write_sites_lint_what_they_wrote():
+    src = io.open(RUNNER, encoding="utf-8").read()
+    for step in ("4a_tactical_report", "4b_opposition_report"):
+        assert _calls_after(src, step), (
+            f"the block that writes and marks {step} does not call "
+            f"_lint_report. A report is checked at the moment it is "
+            f"produced, or the findings are discovered by whoever reads it "
+            f"last.")
+
+
+def test_the_wiring_check_would_notice_its_absence():
+    """Mutation: the test above must fail if the call is removed."""
+    src = io.open(RUNNER, encoding="utf-8").read()
+    stripped = "\n".join(l for l in src.splitlines()
+                         if "_lint_report(" not in l)
+    assert not _calls_after(stripped, "4a_tactical_report")
+
+
+def test_lint_report_writes_findings_beside_the_report(tmp_path):
+    from pipeline_runner_v2 import _lint_report
+    (tmp_path / "tactical_report.md").write_text(
+        "Rest defence security was measured as very secure.", encoding="utf-8")
+    (tmp_path / "result_family_gates.json").write_text(
+        json.dumps(GATES), encoding="utf-8")
+
+    _lint_report(str(tmp_path), "tactical_report.md")
+
+    out = tmp_path / "tactical_report.lint.txt"
+    assert out.exists(), "no findings file written beside the report"
+    assert "measurement_language_on_downgraded_family" in out.read_text(
+        encoding="utf-8")
+
+
+def test_a_clean_report_still_gets_a_findings_file(tmp_path):
+    """Absence of a file and absence of findings must not look identical."""
+    from pipeline_runner_v2 import _lint_report
+    (tmp_path / "tactical_report.md").write_text(
+        "Gorleston won 2-0.", encoding="utf-8")
+    _lint_report(str(tmp_path), "tactical_report.md")
+    out = tmp_path / "tactical_report.lint.txt"
+    assert out.exists()
+    assert "nothing to answer for" in out.read_text(encoding="utf-8")
+
+
+def test_a_lint_failure_does_not_lose_a_paid_report(tmp_path, capsys):
+    """The report has already been bought. A lint problem warns; it does not
+    raise into the caller and abandon the run."""
+    from pipeline_runner_v2 import _lint_report
+    _lint_report(str(tmp_path), "does_not_exist.md")
+    assert "report_lint could not run" in capsys.readouterr().out

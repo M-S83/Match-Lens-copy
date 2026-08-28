@@ -57,14 +57,27 @@ KNOWN LIMITS (do not build on these without reading)
    view.
 3. NON-PLAY FRAMES MUST BE EXCLUDED BY THE CALLER using match_boundaries.
    A half-time frame returns a confident, meaningless split.
-4. TRAINING BIBS ARE INDISTINGUISHABLE FROM KIT. A substitute warming up
-   along the touchline in an orange bib is, to this module, a Gorleston
-   goalkeeper: same hue, larger and more saturated than a real shirt, and
-   moving, so the fixed-position reasoning that partially handles the dugout
-   does not apply. There is no colour fix. What there is instead is a bound:
-   a side has one goalkeeper, so two home_gk labels in one frame means at
-   least one is wrong. FrameResult.keeper_counts reports per side and
-   team_detect marks such a frame invalid.
+4. TRAINING BIBS ARE KIT, ON THE SHIRT BAND. A substitute warming up along
+   the touchline wears a bib and tracksuit bottoms. The bib is a large,
+   saturated, single-colour torso -- the best target on the frame for a hue
+   classifier -- worn by someone who is not playing, and moving, so the
+   fixed-position reasoning that partially handles the dugout does not apply.
+
+   The first attempt at this was a per-side keeper bound, on the assumption
+   that an orange bib becomes a false Gorleston keeper. It does not. Orange
+   sits 12 from red, inside COLLIDE, so home_gk is DISABLED on this match
+   and orange pixels fall into Tilbury's band. Nothing is ever labelled
+   keeper, so the bound can never fire; the bib becomes a false outfield
+   PLAYER. The bound is kept because it is sound where a keeper anchor is
+   live, but it is not the mechanism that catches this.
+
+   The mechanism is the lower body. A bib covers the torso and nothing else,
+   so where match_config names the shorts or socks colour, a shirt-band
+   match must be corroborated below the waist or the detection is labelled
+   "bib". This is why the shorts and socks bands exist despite the team vote
+   deliberately sampling the shirt alone: they answer a different question --
+   not WHICH kit, but whether this is a kit at all. Anchors whose kit string
+   names no lower garment cannot be tested and are named in caveats.
 5. COVERAGE IS NOT ACCURACY. Officials and management are correctly refused
    and land in "other", which sits in coverage's denominator. A frame with
    the referee, two assistants and three staff in shot cannot exceed roughly
@@ -104,6 +117,20 @@ MIN_PLANE_PTS = 6    # fewer confident players than this ⇒ no ground-plane fit
 # larger labelled set -- one frame is not a validation set.
 BANDS = ((0.15, 0.48),)
 BANDS_ALL_GARMENTS = ((0.15, 0.48), (0.52, 0.68), (0.72, 0.92))
+# Shorts and socks, sampled separately from the shirt. Not extra evidence for
+# the team vote -- that was tried and rejected, see the note above -- but the
+# answer to a different question: is this person wearing the kit, or only the
+# colour? A training bib covers the torso and nothing else, so a substitute
+# jogging the touchline in an orange bib has a keeper's shirt and tracksuit
+# legs. Only the lower body can tell them apart.
+LOWER_BANDS      = BANDS_ALL_GARMENTS[1:]
+LOWER_MIN_PIXELS = 25    # below this the legs are occluded or out of frame
+LOWER_MIN_SHARE  = 0.15  # a real player's legs carry at least this much kit
+
+GARMENT_OF = {"shirt": "shirt", "shirts": "shirt", "top": "shirt",
+              "tops": "shirt", "jersey": "shirt", "jerseys": "shirt",
+              "short": "shorts", "shorts": "shorts",
+              "sock": "socks", "socks": "socks"}
 
 # Colour names as they appear in match_config, mapped to OpenCV hue.
 HUE_OF = {"red": 0.0, "orange": 12.0, "yellow": 27.0, "green": 50.0,
@@ -153,9 +180,12 @@ class FrameResult:
         Reported alongside every count because a count without it is not
         interpretable: 6 home out of 8 readable detections and 6 out of 20
         are different claims."""
+        # "bib" is a positive identification of a non-player, like off_pitch,
+        # not a failure to read someone. Counting it against coverage would
+        # penalise the classifier for getting a substitute right.
         readable = [l for _, l, _ in self.labels
                     if l not in ("too_small", "off_pitch", "off_field",
-                                 "outside_play")]
+                                 "outside_play", "bib")]
         if not readable:
             return 0.0
         named = [l for l in readable if l in ("home", "away", "keeper")]
@@ -177,6 +207,50 @@ def kit_hue(description):
         if w in HUE_OF:
             return HUE_OF[w]
     return None
+
+
+def garment_hues(description):
+    """{garment: hue} for each garment the kit string actually names.
+
+    "orange shirt, orange shorts, orange socks" gives all three, so a person
+    matching that hue on the torso but not below it can be challenged.
+    "yellow shirt" gives only the shirt: nothing is known about that keeper's
+    legs, so no lower-body test may be applied to him and the caller is told
+    so rather than left to assume the check ran.
+
+    A string with no garment word at all returns nothing. Guessing that a
+    bare "red" means red shorts would let the bib test fire on a team that
+    wears white ones.
+    """
+    if not description:
+        return {}
+    out = {}
+    for clause in str(description).lower().split(","):
+        words   = clause.split()
+        colours = [HUE_OF[w] for w in words if w in HUE_OF]
+        parts   = [GARMENT_OF[w] for w in words if w in GARMENT_OF]
+        if len(colours) == 1:
+            for p in parts:
+                out[p] = colours[0]
+    return out
+
+
+def lower_body_probe(description):
+    """(hue, bands) for the lower garments this kit names, else (None, ()).
+
+    Sampling only the garments actually named in that colour matters: a kit
+    of "red shirt, white shorts, red socks" is testable on the socks, and
+    including the shorts band would put a large white surface in the
+    denominator and make a real player look like a bib.
+    """
+    g = garment_hues(description)
+    band_of = {"shorts": BANDS_ALL_GARMENTS[1], "socks": BANDS_ALL_GARMENTS[2]}
+    hues = {g[k] for k in ("shorts", "socks") if k in g}
+    if len(hues) != 1:
+        return None, ()
+    hue = hues.pop()
+    return hue, tuple(band_of[k] for k in ("shorts", "socks")
+                      if g.get(k) == hue)
 
 
 def resolve_anchors(match_config, grass_hue):
@@ -294,12 +368,17 @@ def grass_edge(image_bgr, hsv, grass_hue):
     return np.polyval(np.polyfit(xs[keep], ys[keep], 2), np.arange(W))
 
 
-def kit_votes(hsv, box, mask, grass_hue, grass_v, live, needs_value):
-    """Pixels of each kit's colour on this person, across all three garments."""
+def kit_votes(hsv, box, mask, grass_hue, grass_v, live, needs_value,
+              bands=None):
+    """Pixels of each kit's colour on this person, over the chosen garments.
+
+    bands defaults to the shirt alone, which is what the team vote uses.
+    Pass LOWER_BANDS to ask the separate question the bib test needs.
+    """
     x1, y1, x2, y2 = box
     h = y2 - y1
     band = np.zeros_like(mask)
-    for lo, hi in BANDS:
+    for lo, hi in (BANDS if bands is None else bands):
         a, b = max(0, y1 + int(lo * h)), min(mask.shape[0], y1 + int(hi * h))
         if b - a >= 2:
             band[a:b, :] |= mask[a:b, :]
@@ -409,6 +488,25 @@ def classify_frame(image_bgr, detections, match_config):
     edge = grass_edge(image_bgr, hsv, gh)
     H0, W0 = image_bgr.shape[:2]
 
+    # Which anchors can be challenged on the lower body, and which cannot.
+    lower_probe, unprobed = {}, []
+    for anchor, cfg_key in (("home", "home_kit"), ("away", "away_kit"),
+                            ("home_gk", "home_gk_kit"),
+                            ("away_gk", "away_gk_kit")):
+        if anchor not in live:
+            continue
+        hue, lbands = lower_body_probe(match_config.get(cfg_key))
+        if hue is None or not lbands:
+            unprobed.append(anchor)
+        else:
+            lower_probe[anchor] = (hue, lbands)
+    if unprobed:
+        caveats.append(
+            "no lower-body check for " + ", ".join(sorted(unprobed)) +
+            ": the kit string names no shorts or socks colour, so a "
+            "training bib in that colour cannot be distinguished from the "
+            "kit. Add the lower garments to match_config to enable it.")
+
     labelled = []
     for box, mask in detections:
         x1, y1, x2, y2 = map(int, box)
@@ -420,11 +518,33 @@ def classify_frame(image_bgr, detections, match_config):
             labelled.append(((x1, y1, x2, y2), "off_pitch", None))
             continue
         v = kit_votes(hsv, (x1, y1, x2, y2), mask, gh, gv, live, needs_value)
+        lab = label_from_votes(v, live)
         # The raw anchor travels inside the votes dict so it survives
         # apply_ground_plane, which rewrites the label list.
         if isinstance(v, dict) and v:
             v["_label"] = label_from_votes(v, live, collapse=False)
-        labelled.append(((x1, y1, x2, y2), label_from_votes(v, live), v))
+
+        # Wearing the colour is not wearing the kit. A training bib covers
+        # the torso only, so a substitute in an orange bib matches the
+        # keeper anchor on the shirt and shows tracksuit below it. Where the
+        # config names the lower garments, require them to corroborate.
+        raw = v.get("_label") if isinstance(v, dict) else None
+        if raw in lower_probe:
+            hue, lbands = lower_probe[raw]
+            lv = kit_votes(hsv, (x1, y1, x2, y2), mask, gh, gv,
+                           {raw: hue}, needs_value, bands=lbands)
+            if lv and lv.get("_total", 0) >= LOWER_MIN_PIXELS:
+                share = lv.get(raw, 0) / max(1, lv["_total"])
+                v["_lower_share"] = round(share, 3)
+                if share < LOWER_MIN_SHARE:
+                    # Legs are readable and carry none of the kit: the colour
+                    # is on the torso alone.
+                    lab = "bib"
+            else:
+                # Occluded or out of frame. Absence of legs is not evidence
+                # of a bib, so the label stands unchallenged and says so.
+                v["_lower_share"] = None
+        labelled.append(((x1, y1, x2, y2), lab, v))
 
     labelled, plane = apply_ground_plane(labelled)
 

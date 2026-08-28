@@ -251,3 +251,161 @@ def test_officials_and_staff_land_in_other_not_in_a_team():
     assert label_from_votes({}, live) == "other"
     assert label_from_votes({"_total": 1000, "home": 3, "away": 4},
                             live) == "other"
+
+
+# ── shorts and socks: wearing the colour vs wearing the kit ───────────────
+#
+# The team vote deliberately samples the shirt alone. That is right for
+# deciding WHICH team, and it is exactly why a training bib defeats it: a bib
+# is a torso, and a substitute jogging the touchline in an orange bib is, on
+# the shirt band, a perfect Gorleston keeper.
+#
+# The lower body answers a different question -- is this person wearing the
+# kit, or only the colour -- so it is sampled separately rather than folded
+# back into the vote.
+
+import cv2
+from team_classifier import (
+    LOWER_MIN_SHARE, classify_frame, garment_hues, lower_body_probe,
+)
+
+
+def test_garment_hues_reads_each_garment_the_kit_names():
+    assert garment_hues("orange shirt, orange shorts, orange socks") == {
+        "shirt": ORANGE, "shorts": ORANGE, "socks": ORANGE}
+
+
+def test_a_shirt_only_kit_string_claims_nothing_about_the_legs():
+    """away_gk_kit on this match is "yellow shirt" and nothing more.
+
+    Assuming yellow shorts would let the bib test fire on a keeper who wears
+    black ones. The honest answer is that he cannot be tested.
+    """
+    assert garment_hues("yellow shirt") == {"shirt": YELLOW}
+    assert lower_body_probe("yellow shirt") == (None, ())
+
+
+def test_a_bare_colour_claims_nothing():
+    assert lower_body_probe("red") == (None, ())
+
+
+def test_white_shorts_are_dropped_and_the_socks_carry_the_test():
+    """Including a large white surface in the denominator would make a real
+    player look like a bib."""
+    hue, bands = lower_body_probe("red shirt, white shorts, red socks")
+    assert hue == RED
+    assert len(bands) == 1 and bands[0] == (0.72, 0.92)
+
+
+# -- end to end on synthetic frames ----------------------------------------
+
+def _person(img, mask, x, y, w, h, torso_hsv, legs_hsv):
+    """A rectangle of torso over a rectangle of legs, in HSV."""
+    torso = (y + int(0.10 * h), y + int(0.50 * h))
+    legs  = (y + int(0.50 * h), y + h)
+    for (a, b), colour in ((torso, torso_hsv), (legs, legs_hsv)):
+        patch = np.full((b - a, w, 3), colour, np.uint8)
+        img[a:b, x:x + w] = cv2.cvtColor(patch, cv2.COLOR_HSV2BGR)
+    mask[y:y + h, x:x + w] = True
+    return (x, y, x + w, y + h)
+
+
+def _scene(legs_hsv, torso_hue=ORANGE):
+    """One person on grass. Torso and legs vary by test."""
+    H, W = 400, 400
+    img  = cv2.cvtColor(np.full((H, W, 3), (GRASS, 120, 57), np.uint8),
+                        cv2.COLOR_HSV2BGR)
+    mask = np.zeros((H, W), bool)
+    box  = _person(img, mask, 150, 150, 40, 180,
+                   torso_hsv=(int(torso_hue), 200, 200), legs_hsv=legs_hsv)
+    return img, [(np.array(box, float), mask)]
+
+
+def _label(legs_hsv, torso_hue=ORANGE, **cfg):
+    img, dets = _scene(legs_hsv, torso_hue)
+    res = classify_frame(img, dets, _mc(**cfg))
+    return [l for _, l, _ in res.labels][0], res
+
+
+TRACKSUIT = (110, 180, 60)      # dark navy bottoms
+FULL_KIT_ORANGE = (int(ORANGE), 200, 200)
+FULL_KIT_YELLOW = (int(YELLOW), 200, 200)
+
+REAL = dict(home="green shirts, green shorts, green socks",
+            away="red shirts, red shorts, red socks",
+            home_gk="orange shirt, orange shorts, orange socks",
+            away_gk="yellow shirt")
+
+
+def test_a_red_bib_is_a_false_TILBURY_PLAYER_not_a_false_keeper():
+    """The failure as it actually occurs, and why the keeper bound misses it.
+
+    home_gk is orange, which sits 12 from red -- inside COLLIDE -- so the
+    keeper anchor is disabled on this match and orange pixels fall into
+    Tilbury's band. No detection is ever labelled "keeper", so a per-side
+    keeper bound cannot fire. A bib in an outfield colour is counted as an
+    outfield PLAYER, and only the legs give it away.
+    """
+    lab, _ = _label(TRACKSUIT, RED, **REAL)
+    assert lab == "bib", (
+        f"a red training bib over tracksuit bottoms was labelled {lab!r}; "
+        f"on the shirt band alone it is a Tilbury player")
+
+
+def test_an_orange_bib_is_ambiguous_on_this_config_rather_than_wrong():
+    """Worth pinning because it is luck, not design.
+
+    Orange sits 12 from red and 15 from yellow, both inside BAND, so an
+    orange surface votes equally for the Tilbury kit and the Tilbury keeper
+    and the margin rule refuses it. That refusal is the only thing standing
+    between an orange bib and a false Tilbury player, and it would vanish if
+    either kit colour moved. It is not a substitute for the lower-body test.
+    """
+    lab, _ = _label(TRACKSUIT, ORANGE, **REAL)
+    assert lab in ("other", "bib")
+
+
+def test_a_tilbury_player_in_full_red_survives():
+    """The other direction: full kit below the waist must not be discarded."""
+    lab, _ = _label((int(RED), 200, 200), RED, **REAL)
+    assert lab == "away"
+
+
+def test_a_green_bib_would_be_caught_the_same_way():
+    lab, _ = _label(TRACKSUIT, GREEN, **REAL)
+    assert lab == "bib"
+
+
+def test_a_gorleston_player_in_full_green_survives():
+    lab, _ = _label((int(GREEN), 200, 200), GREEN, **REAL)
+    assert lab == "home"
+
+
+def test_a_separable_keeper_still_reads_as_a_keeper():
+    """With a keeper colour far enough from both outfield kits, the anchor is
+    live -- and full kit below the waist keeps him a keeper."""
+    cfg = dict(REAL, away_gk="yellow shirt, yellow shorts, yellow socks")
+    lab, _ = _label(FULL_KIT_YELLOW, YELLOW, **cfg)
+    assert lab == "keeper"
+
+
+def test_a_yellow_bib_over_tracksuit_is_not_a_keeper():
+    cfg = dict(REAL, away_gk="yellow shirt, yellow shorts, yellow socks")
+    lab, _ = _label(TRACKSUIT, YELLOW, **cfg)
+    assert lab == "bib"
+
+
+def test_a_bib_does_not_count_against_coverage():
+    """A positive identification of a non-player, like off_pitch -- not
+    someone the classifier failed to read."""
+    _, res = _label(TRACKSUIT, RED, **REAL)
+    assert res.counts.get("bib") == 1
+    assert res.coverage == 0.0
+
+
+def test_an_unprobed_anchor_is_declared_rather_than_silently_skipped():
+    """away_gk names only a shirt, so the caller must be told the bib test
+    cannot protect that anchor -- not left assuming it ran."""
+    _, res = _label((int(RED), 200, 200), RED, **REAL)
+    assert any("no lower-body check" in c and "away_gk" in c
+               for c in res.caveats), res.caveats

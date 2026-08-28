@@ -172,59 +172,119 @@ def test_missing_config_files_do_not_crash_the_lint(tmp_path):
     assert RL.lint_match(str(tmp_path)) == []
 
 
-# ── the linter has to actually run ────────────────────────────────────────
+# ── the linter has to actually run, wherever the write lives ─────────────
 #
-# report_filter.py has sat in this repo defining report levels and a prompt
-# builder that nothing imports. A checker nobody calls is worse than no
-# checker: it reads as coverage that does not exist. These tests hold the
-# wiring, not just the logic.
-
+# The first version of this wiring test asserted that pipeline_runner_v2's
+# 4a/4b blocks call the linter. They do. They also never execute: the runner
+# prints "3l_synthesis output is current. Skipping 4a/4b", and synthesis_agent
+# is what writes the files. So the checker was wired into a dead path, the
+# test was green, and a full run produced no lint output at all.
+#
+# The test below does not name a module. It finds every function anywhere in
+# the repo that writes a report file, and requires that function to lint it.
+# Move the write and the test follows it.
 import ast
-import io
+import glob
+import io as _io
+import re
 
-RUNNER = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "pipeline_runner_v2.py")
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _calls_after(source: str, marker_step: str) -> bool:
-    """Is _lint_report called in the same block that marks this step done?"""
-    tree = ast.parse(source)
+def _scan_source(source: str, label: str = "<src>"):
+    """(label, function, dump, lints) for each report-writing function."""
+    out = []
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return out
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Try):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        body = ast.dump(ast.Module(body=node.body, type_ignores=[]))
-        if marker_step in body and "_lint_report" in body:
-            return True
-    return False
+        dump  = ast.dump(node)
+        names = re.findall(r"'([^']*report[^']*\.md)'", dump)
+        names += re.findall(r"'(opposition_report_)'", dump)
+        writes = "open" in dump and "'w'" in dump
+        if names and writes:
+            out.append((label, node.name, dump, "lint" in dump.lower()))
+    return out
 
 
-def test_both_report_write_sites_lint_what_they_wrote():
-    src = io.open(RUNNER, encoding="utf-8").read()
-    for step in ("4a_tactical_report", "4b_opposition_report"):
-        assert _calls_after(src, step), (
-            f"the block that writes and marks {step} does not call "
-            f"_lint_report. A report is checked at the moment it is "
-            f"produced, or the findings are discovered by whoever reads it "
-            f"last.")
+def _report_writing_functions():
+    out = []
+    for path in glob.glob(os.path.join(REPO, "*.py")):
+        out += _scan_source(_io.open(path, encoding="utf-8").read(),
+                            os.path.basename(path))
+    return out
 
 
-def test_the_wiring_check_would_notice_its_absence():
-    """Mutation: the test above must fail if the call is removed."""
-    src = io.open(RUNNER, encoding="utf-8").read()
-    stripped = "\n".join(l for l in src.splitlines()
-                         if "_lint_report(" not in l)
-    assert not _calls_after(stripped, "4a_tactical_report")
+def test_the_wiring_scan_finds_the_report_writers():
+    """Guard against a green run that scanned nothing."""
+    found = _report_writing_functions()
+    assert found, ("no report-writing function found anywhere in the repo; "
+                   "the wiring assertion below would pass vacuously")
+    assert any("synthesis" in f for f, _, _, _ in found), (
+        f"synthesis_agent writes the reports on every real run; scan found "
+        f"{[(f, n) for f, n, _, _ in found]}")
 
 
-def test_lint_report_writes_findings_beside_the_report(tmp_path):
-    from pipeline_runner_v2 import _lint_report
+def test_every_function_that_writes_a_report_lints_it():
+    unlinted = [(f, n) for f, n, _, lints in _report_writing_functions()
+                if not lints]
+    assert not unlinted, (
+        "function(s) write a report without checking it: "
+        + ", ".join(f"{f}:{n}" for f, n in unlinted)
+        + ". A report is checked where it is written, or the findings are "
+          "discovered by whoever reads it last.")
+
+
+UNLINTED_WRITER = '''
+def _write_tactical_report(match_dir, bundle):
+    result = call_the_api()
+    out_path = os.path.join(match_dir, "tactical_report.md")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(result)
+    return result
+'''
+
+LINTED_WRITER = UNLINTED_WRITER.replace(
+    "    return result", "    _lint_written_report(match_dir, x)\n    return result")
+
+
+def test_the_scan_recognises_a_writer_that_does_not_lint():
+    """Mutation, against the predicate rather than against the repo.
+
+    The previous version of this test compared the repo to itself after a
+    string replace that could never change the answer -- it asserted nothing.
+    """
+    found = _scan_source(UNLINTED_WRITER)
+    assert len(found) == 1, found
+    assert found[0][3] is False, "a writer with no lint call read as linted"
+
+
+def test_the_scan_recognises_a_writer_that_does_lint():
+    found = _scan_source(LINTED_WRITER)
+    assert len(found) == 1, found
+    assert found[0][3] is True
+
+
+def test_a_function_that_writes_something_else_is_not_in_scope():
+    found = _scan_source('''
+def _write_state(match_dir):
+    with open(os.path.join(match_dir, "pipeline_state.json"), "w") as f:
+        f.write("{}")
+''')
+    assert found == []
+
+
+def test_lint_written_report_writes_findings_beside_the_report(tmp_path):
+    from synthesis_agent import _lint_written_report
     (tmp_path / "tactical_report.md").write_text(
         "Rest defence security was measured as very secure.", encoding="utf-8")
     (tmp_path / "result_family_gates.json").write_text(
         json.dumps(GATES), encoding="utf-8")
 
-    _lint_report(str(tmp_path), "tactical_report.md")
+    _lint_written_report(str(tmp_path), "tactical_report.md")
 
     out = tmp_path / "tactical_report.lint.txt"
     assert out.exists(), "no findings file written beside the report"
@@ -234,10 +294,10 @@ def test_lint_report_writes_findings_beside_the_report(tmp_path):
 
 def test_a_clean_report_still_gets_a_findings_file(tmp_path):
     """Absence of a file and absence of findings must not look identical."""
-    from pipeline_runner_v2 import _lint_report
+    from synthesis_agent import _lint_written_report
     (tmp_path / "tactical_report.md").write_text(
         "Gorleston won 2-0.", encoding="utf-8")
-    _lint_report(str(tmp_path), "tactical_report.md")
+    _lint_written_report(str(tmp_path), "tactical_report.md")
     out = tmp_path / "tactical_report.lint.txt"
     assert out.exists()
     assert "nothing to answer for" in out.read_text(encoding="utf-8")
@@ -246,6 +306,113 @@ def test_a_clean_report_still_gets_a_findings_file(tmp_path):
 def test_a_lint_failure_does_not_lose_a_paid_report(tmp_path, capsys):
     """The report has already been bought. A lint problem warns; it does not
     raise into the caller and abandon the run."""
-    from pipeline_runner_v2 import _lint_report
-    _lint_report(str(tmp_path), "does_not_exist.md")
+    from synthesis_agent import _lint_written_report
+    _lint_written_report(str(tmp_path), "does_not_exist.md")
     assert "report_lint could not run" in capsys.readouterr().out
+
+
+# ── the citation that argues with itself ──────────────────────────────────
+#
+# The two-axis rule is stated as plainly as prose can manage -- "The grade is
+# the LOWER of them", "Not [A] with a caveat sentence -- [B]" -- and the
+# writer applied it correctly and then published the wrong letter, because it
+# used the bracket to show its working. Eight in one opposition report.
+#
+# These are the exact strings from the 28 August run.
+
+GORLESTON_CITATIONS = [
+    "[A — accumulator: consistent, observability: downgraded]",
+    "[A — accumulator: consistent, observability: downgraded → B]",
+    "[A — accumulator: consistent, 11 high out of 17 appearances, "
+    "observability: downgraded → B]",
+    "[A — count axis consistent, observability axis downgraded = B]",
+]
+
+
+@pytest.mark.parametrize("citation", GORLESTON_CITATIONS)
+def test_a_citation_that_resolves_to_b_is_caught(citation):
+    out = RL.lint(f"Forbes ran in behind consistently {citation}.", GATES)
+    assert "citation_contradicts_its_own_grade" in _checks(out), citation
+
+
+def test_the_finding_names_the_grade_the_citation_reached():
+    out = RL.lint("x [A — consistent, observability: downgraded → B].", GATES)
+    detail = [f for f in out
+              if f["check"] == "citation_contradicts_its_own_grade"][0]["detail"]
+    assert "[A]" in detail and "[B]" in detail
+
+
+def test_a_correctly_resolved_citation_is_left_alone():
+    """What the prompt now asks for: the answer, not the working."""
+    assert RL.lint(
+        "Forbes ran in behind [B — 11 observations; movement downgraded on "
+        "this source].", GATES) == []
+
+
+def test_a_bare_letter_is_fine():
+    assert RL.lint("Forbes ran in behind [B].", GATES) == []
+
+
+def test_one_defect_produces_one_finding():
+    """The contradiction check supersedes the consistency heuristic. Both
+    firing on the same citation is noise, and noise is how a checker gets
+    ignored."""
+    out = RL.lint("x [A — accumulator: consistent, observability: "
+                  "downgraded → B].", GATES)
+    assert len(out) == 1, [f["check"] for f in out]
+
+
+def test_a_lower_grade_naming_a_higher_one_is_not_a_contradiction():
+    """[C - would be B if the far side were visible] is honest, not wrong."""
+    out = RL.lint("x [C — would be B were the far side visible].", GATES)
+    assert "citation_contradicts_its_own_grade" not in _checks(out)
+
+
+# ── families are named by their fields, not only by prose ─────────────────
+
+def test_press_trigger_summary_is_the_pressing_family():
+    """A real [A] on a downgraded family went unflagged because the pattern
+    demanded the words "pressing" or "pressure". Citations name fields."""
+    out = RL.lint("Back pass was the top trigger "
+                  "[A — press_trigger_summary: 8 observed phases].",
+                  dict(GATES, gates=dict(GATES["gates"], pressing="downgraded")))
+    assert "a_grade_on_downgraded_family" in _checks(out)
+
+
+# ── a number has to be about the field it is matched against ──────────────
+
+VAR_POSS = {"fields": {"possession_by_window.focus_pct": {
+    "verdict": "constructed", "windows_with_value": 21,
+    "values": {"50.0": 20}}}}
+
+
+def test_a_line_height_percentage_is_not_a_possession_figure():
+    """Both medium findings on the 28 August reports were line-height text
+    matched against possession's modal value. away_height_pct is measured."""
+    out = RL.lint("The defensive line settled at approximately 40–50% of the "
+                  "pitch depth across the first half.", GATES, VAR_POSS)
+    assert out == [], out
+
+
+def test_out_of_possession_is_a_phase_of_play_not_a_statistic():
+    """The idiom put every defending paragraph's numbers in scope."""
+    out = RL.lint("Tilbury organised in a mid-block out of possession. The "
+                  "defensive line settled at 50% of the pitch depth.",
+                  GATES, VAR_POSS)
+    assert out == [], out
+
+
+def test_a_real_possession_figure_is_still_caught():
+    out = RL.lint("The possession split was a contested 50% across the match.",
+                  GATES, VAR_POSS)
+    assert "value_from_unmeasured_field" in _checks(out)
+
+
+def test_an_unmonitored_field_still_matches_without_a_subject():
+    """A field with no SUBJECT_OF entry falls back to matching anywhere,
+    rather than silently checking nothing."""
+    variance = {"fields": {"some_new_list.some_field": {
+        "verdict": "not_measured", "windows_with_value": 20,
+        "values": {"77.0": 19}}}}
+    assert "value_from_unmeasured_field" in _checks(
+        RL.lint("The figure was 77% across the match.", GATES, variance))

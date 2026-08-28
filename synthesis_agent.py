@@ -281,6 +281,39 @@ axis permits [A]; the finding belongs to player_positioning, and
 if that family is "downgraded" for this source the observability
 axis permits [B]; the lower of the two is [B]. Write [B].
 
+CITATION FORMAT. A citation is [<letter>] or [<letter> — <reason>].
+The letter is the FINAL grade after both axes. The reason is a
+short phrase of evidence. The reason must not contain another
+grade letter, an arrow, or the word "downgraded → ".
+
+This is not stylistic. On the Gorleston run the writer applied the
+two-axis rule correctly and then published the wrong letter,
+because it used the bracket to show its working:
+
+  WRONG  [A — accumulator: consistent, observability: downgraded → B]
+  WRONG  [A — accumulator: consistent, observability: downgraded]
+  WRONG  [A — count axis consistent, observability axis downgraded = B]
+
+Every one of those resolves to B in its own text and is published
+as A. A reader skimming grades sees A. Eight appeared in a single
+opposition report.
+
+  RIGHT  [grade — 11 observations; positioning downgraded here]
+  RIGHT  [grade — consistent across 17 appearances]
+  RIGHT  [grade]
+
+(As everywhere else in this prompt, [grade] stands for the letter
+you compute. The right-hand examples carry no literal letter for
+the same reason the sentence examples do not: a demonstrated
+letter outweighs a stated rule.)
+
+The letter you write is the RESOLVED grade. The reason after the
+dash never carries a second letter and never carries an arrow.
+Do the two-axis arithmetic before you open the bracket. What goes
+inside is the answer, never the working. If you want to explain
+that a family is downgraded, the limitations section is where that
+belongs, once, not in every citation.
+
 EVERY EXAMPLE SENTENCE BELOW ENDS IN [grade], NOT A LETTER. That
 is deliberate. The right letter depends on the family gate for
 THIS match, which the examples cannot know, and an example
@@ -1047,6 +1080,47 @@ def _call_synthesis(system_prompt: str, user_content: str,
 
 # ── Document writers ──────────────────────────────────────────────────────
 
+def _lint_written_report(match_dir: str, filename: str) -> None:
+    """Check a report against the gates it was written under.
+
+    This call lived in pipeline_runner_v2's 4a/4b blocks first, which never
+    execute: the runner prints "3l_synthesis output is current. Skipping
+    4a/4b" and these functions are the ones that write the files. A checker
+    wired into a dead path is worse than none, because it reads as coverage
+    that does not exist -- and the test asserting the wiring passed, because
+    it checked the write sites I had found rather than the one that runs.
+
+    Non-fatal: the report is already paid for and a lint problem must not
+    lose it. Never silent: a swallowed exception is what let step 3i never
+    run for as long as it did.
+    """
+    try:
+        import report_lint
+        findings = report_lint.lint_match(match_dir, filename)
+    except Exception as exc:                       # noqa: BLE001
+        print(f"  [WARN] report_lint could not run on {filename}: {exc}")
+        return
+
+    stem = os.path.splitext(filename)[0]
+    try:
+        with open(os.path.join(match_dir, f"{stem}.lint.txt"),
+                  "w", encoding="utf-8") as fh:
+            fh.write(report_lint.format_findings(findings, filename) + "\n")
+    except OSError as exc:
+        print(f"  [WARN] could not write {stem}.lint.txt: {exc}")
+
+    if not findings:
+        print(f"  [LINT] {filename}: nothing to answer for.")
+        return
+    high = sum(1 for f in findings if f.get("severity") == "high")
+    print(f"  [LINT] {filename}: {len(findings)} finding(s), {high} high "
+          f"-- see {stem}.lint.txt")
+    for f in findings[:3]:
+        print(f"         line {f['line']}: {f['check']}")
+    if len(findings) > 3:
+        print(f"         ... and {len(findings) - 3} more")
+
+
 def _write_tactical_report(match_dir: str, bundle: dict) -> str:
     """Generate and write tactical_report.md via synthesis agent."""
     mc         = bundle["match_config"]
@@ -1076,6 +1150,7 @@ begin the report. Follow the document specification exactly.
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(result)
     print(f"  tactical_report.md written ({len(result):,} chars)")
+    _lint_written_report(match_dir, "tactical_report.md")
     return result
 
 
@@ -1118,6 +1193,7 @@ begin the report. Follow the document specification exactly.
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(result)
     print(f"  {fname} written ({len(result):,} chars)")
+    _lint_written_report(match_dir, fname)
     return result
 
 

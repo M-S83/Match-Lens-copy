@@ -37,7 +37,11 @@ SCHEMA_VERSION = "1.0"
 # downgraded need an entry; a term that maps to nothing is not checked.
 FAMILY_TERMS = {
     "rest_defence":       r"rest.?defen[cs]e",
-    "pressing":           r"press(?:ing|ure)\b|counter.?press",
+    # press_trigger_summary named a real [A] on a downgraded family that
+    # went unflagged, because the pattern demanded the words "pressing" or
+    # "pressure". Field names are how citations refer to families.
+    "pressing":           r"press(?:ing|ure)\b|counter.?press|press_trigger|"
+                          r"press_\w+|pressing_by_window",
     "shape":              r"\bformation\b|\bshape\b|back four|midfield (?:two|three|four)",
     "territory":          r"line height|defensive line|possession|territor|field position",
     "set_pieces":         r"set.?piece|corner|free.?kick|throw.?in",
@@ -46,6 +50,22 @@ FAMILY_TERMS = {
     "build_up":           r"build.?up",
     "transitions":        r"transition",
     "opposition_structure": r"opposition structure",
+}
+
+# What a monitored field's number would be talking about, so a bare
+# percentage is not matched against every field that ever held that value.
+SUBJECT_OF = {
+    "possession_by_window.focus_pct":  r"possession|time on the ball|"
+                                       r"share of the ball",
+    "possession_by_window.focus_seqs": r"possession|sequence count",
+    "possession_by_window.opp_seqs":   r"possession|sequence count",
+    "line_height_m_by_window.home_height_pct": r"line height|defensive line|"
+                                               r"pitch (?:depth|length)",
+    "line_height_m_by_window.away_height_pct": r"line height|defensive line|"
+                                               r"pitch (?:depth|length)",
+    "pressing_by_window.home_intensity": r"press",
+    "pressing_by_window.away_intensity": r"press",
+    "pressing_by_window.avg_score":      r"press",
 }
 
 # Language that asserts a reading was taken.
@@ -109,9 +129,47 @@ def lint(report_text: str, gates: dict = None,
     findings = []
     downgraded = {f for f, v in gates.items() if v == "downgraded"}
 
+    # 0. A citation that contradicts itself.
+    #
+    #    [A - accumulator: consistent, observability: downgraded -> B]
+    #
+    #    The two-axis arithmetic is right and the published letter is wrong.
+    #    Eight of these appeared in one opposition report. This is checked
+    #    before the heuristics below because it is not a heuristic: the
+    #    citation names its own answer.
+    answered = set()          # citations the contradiction check has claimed
+    for g in grades_in(report_text):
+        line = report_text[:g["pos"]].count("\n") + 1
+        named = re.findall(r"(?:→|->|=|to)\s*\[?([A-I])\b", g["reason"])
+        named += re.findall(r"\bpermits?\s+\[?([A-I])\b", g["reason"])
+        worse = [n for n in named if n > g["grade"]]
+        if worse:
+            findings.append({
+                "check": "citation_contradicts_its_own_grade",
+                "severity": "high", "line": line, "quote": g["reason"][:110],
+                "detail": "published as [%s] but its own reason resolves to "
+                          "[%s]. The bracket must carry the answer, not the "
+                          "working" % (g["grade"], sorted(worse)[-1])})
+            answered.add(g["pos"])
+            continue
+        # No explicit letter, but the reason states a downgrade and the
+        # grade is still the top one. Same defect, less self-aware.
+        if g["grade"] == "A" and re.search(
+                r"downgrad|not (?:visible|observable|resolvable)|"
+                r"cannot be (?:seen|resolved)", g["reason"], re.I):
+            findings.append({
+                "check": "citation_contradicts_its_own_grade",
+                "severity": "high", "line": line, "quote": g["reason"][:110],
+                "detail": "published as [A] while its own reason says the "
+                          "observability axis is downgraded. The grade is "
+                          "the LOWER of the two axes"})
+            answered.add(g["pos"])
+
     # 1. An A grade on a family this source cannot see.
     for g in grades_in(report_text):
-        if g["grade"] != "A":
+        if g["grade"] != "A" or g["pos"] in answered:
+            # A citation that already failed the contradiction check does not
+            # need a second, vaguer finding against it. One defect, one line.
             continue
         fams = [f for f in families_in(g["reason"]) if f in downgraded]
         line = report_text[:g["pos"]].count("\n") + 1
@@ -165,13 +223,27 @@ def lint(report_text: str, gates: dict = None,
                 continue
             pat = r"(?<![\d.])%s\s*%%" % re.escape(
                 str(int(number) if number.is_integer() else number))
+            subject = SUBJECT_OF.get(field)
             for m in re.finditer(pat, report_text):
+                window = report_text[max(0, m.start() - 160):m.start() + 60]
+                # "in possession" and "out of possession" are phases of play,
+                # not possession statistics. Left in, they made every line
+                # height figure in a defending paragraph look like a
+                # possession share.
+                window = re.sub(r"\b(?:in|out of) possession\b", " ",
+                                window, flags=re.I)
+                # A bare percentage proves nothing about which field it came
+                # from. Both hits on the Gorleston reports were line-height
+                # figures matched against possession's modal value, and
+                # away_height_pct is genuinely measured. Require the sentence
+                # to be about this field before flagging its number.
+                if subject and not re.search(subject, window, re.I):
+                    continue
                 findings.append({
                     "check": "value_from_unmeasured_field",
                     "severity": "medium",
                     "line": report_text[:m.start()].count("\n") + 1,
-                    "quote": report_text[max(0, m.start() - 70):
-                                         m.start() + 20].replace("\n", " "),
+                    "quote": window[100:].replace("\n", " "),
                     "detail": "%s is %s; %s was its value in %s of %s windows"
                               % (field, rec["verdict"], m.group(0), seen,
                                  rec.get("windows_with_value", 0))})

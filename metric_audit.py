@@ -28,6 +28,7 @@ VERDICTS
 """
 import argparse
 import json
+import re
 import os
 
 # Observations below which a rate is arithmetic rather than evidence. At n=9
@@ -53,7 +54,27 @@ UNKNOWABLE_DENOMINATOR = {
         "denominator is sequences the agent classified, not sequences "
         "played; a ball-following crop under-samples the far touchline, "
         "which is where width lives"),
+    "build_up_effectiveness_score": (
+        "429 is the number of sequences the agent LOGGED, not the number "
+        "played. A ball-following crop samples the ball's neighbourhood, so "
+        "the total is a sample of unknown size and a percentage of it "
+        "describes the sample rather than the team. The duel section of the "
+        "same report refuses rates for exactly this reason"),
+    "pattern_reliability_score": (
+        "same denominator as build-up effectiveness -- sequences logged, not "
+        "played -- and the route labels come from a three-zone encoding, so "
+        "a dominant-route share measures the encoding as much as the play"),
 }
+
+
+def _has_rate(value) -> bool:
+    """Is there a proportion anywhere in this value?"""
+    if isinstance(value, dict):
+        return any(_looks_like_a_rate(k, v) or _has_rate(v)
+                   for k, v in value.items())
+    if isinstance(value, list):
+        return any(_has_rate(v) for v in value)
+    return False
 
 
 def _n_of(value):
@@ -105,6 +126,20 @@ def audit(match_dir):
         elif n is not None and n < MIN_N_FOR_RATE:
             verdict = "withhold"
             note = f"n={n}: one event moves this by {100/max(n,1):.0f} points"
+        elif n is None and _has_rate(m.get("value")):
+            # between_lines_receiving_rate published a per-player rate over
+            # samples of one to six receptions. It was marked publish because
+            # _n_of cannot see inside a dict keyed by player, so the
+            # MIN_N_FOR_RATE check never ran at all -- the metric was not
+            # judged safe, it was simply not judged.
+            #
+            # A rate whose sample size cannot be stated is not publishable at
+            # any n. The counts underneath it survive: "received between the
+            # lines 0 times from 2 receptions" is honest; "0.0%" is not.
+            verdict = "counts_only"
+            note = ("carries a rate but no sample size this tool can find, so "
+                    "the minimum-n rule never applied to it; publish the "
+                    "counts underneath instead")
         elif status == "downgraded":
             verdict = "cap_at_B"
             note = f"{fam} downgraded for this source"
@@ -123,13 +158,22 @@ def audit(match_dir):
 
 # Field names that express a proportion. On a counts_only metric these are the
 # part that cannot be justified: the counts survive, the ratio does not.
-RATE_KEYS = ("_rate", "_pct", "_share", "score", "percentage")
+#
+# Matched on word boundaries. The first version listed "_rate" as a
+# substring, which does not match a field named plainly "rate" -- so
+# between_lines_receiving_rate kept a per-player "rate" of 0.0 over two
+# receptions straight through strip_rates, and the audit could not even see
+# that the metric carried a proportion. A substring test also has the
+# opposite failure: "rate" appears inside "accurate_passes", which is a count.
+RATE_KEYS = ("rate", "pct", "share", "score", "percentage", "ratio")
+_RATE_KEY_RE = re.compile(
+    r"(?:^|_)(?:" + "|".join(RATE_KEYS) + r")(?:$|_)", re.I)
 
 
 def _looks_like_a_rate(key, value):
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return False
-    return any(k in key.lower() for k in RATE_KEYS)
+    return bool(_RATE_KEY_RE.search(str(key)))
 
 
 def strip_rates(value):

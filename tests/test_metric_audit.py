@@ -172,6 +172,33 @@ def test_a_rate_hidden_in_a_prose_summary_is_also_removed(tmp_path):
 
 
 def test_a_sound_metric_passes_through_untouched(tmp_path):
+    """publish means publish -- nothing is stripped from a clean metric.
+
+    This used to be shown with a value carrying conversion_rate_pct and no
+    key _n_of recognises. That is now counts_only: a rate whose sample size
+    the tool cannot state is not one it can certify. The property here is
+    about pass-through, so it is shown with counts, which need no n.
+    """
+    from metric_audit import apply
+
+    src = {"metric_name": "chance_creation_profile",
+           "supporting_result_families": ["chance_patterns"],
+           "result_family_status": "allowed",
+           "value": {"threat_sequences": 17, "ending_in_cross": 16,
+                     "ending_in_shot": 1}}
+
+    m = apply([src], _match(tmp_path, [src]))[0]
+    assert m["value"] == src["value"], "publish means publish"
+
+
+def test_a_rate_with_no_statable_sample_size_is_not_published(tmp_path):
+    """The behaviour that replaced it, stated rather than left implicit.
+
+    between_lines_receiving_rate published a per-player rate over one to six
+    receptions. It was marked publish because _n_of cannot see inside a dict
+    keyed by player, so the minimum-n rule never ran -- the metric was not
+    judged safe, it was simply not judged.
+    """
     from metric_audit import apply
 
     src = {"metric_name": "chance_creation_profile",
@@ -180,7 +207,33 @@ def test_a_sound_metric_passes_through_untouched(tmp_path):
            "value": {"threat_sequences": 17, "conversion_rate_pct": 4.0}}
 
     m = apply([src], _match(tmp_path, [src]))[0]
-    assert m["value"] == src["value"], "publish means publish"
+    assert m["value"] == {"threat_sequences": 17}, (
+        "the rate survived although its denominator cannot be stated")
+
+
+def test_a_bare_rate_field_is_stripped(tmp_path):
+    """RATE_KEYS listed "_rate" as a substring, which does not match a field
+    named plainly "rate" -- so a per-player rate went straight through."""
+    from metric_audit import apply
+
+    src = {"metric_name": "between_lines_receiving_rate",
+           "supporting_result_families": ["player_movement"],
+           "result_family_status": "allowed",
+           "value": {"A (#1)": {"total_receiving": 2, "between_lines": 0,
+                                "rate": 0.0}}}
+
+    m = apply([src], _match(tmp_path, [src]))[0]
+    assert m["value"]["A (#1)"] == {"total_receiving": 2, "between_lines": 0}
+
+
+def test_a_count_whose_name_contains_a_rate_word_survives():
+    """The opposite failure of a substring test: "rate" sits inside
+    "accurate_passes", which is a count."""
+    from metric_audit import _looks_like_a_rate
+    assert _looks_like_a_rate("accurate_passes", 12) is False
+    assert _looks_like_a_rate("top_route_count", 135) is False
+    assert _looks_like_a_rate("rate", 0.0) is True
+    assert _looks_like_a_rate("final_third_rate_pct", 31.5) is True
 
 
 def test_an_unaudited_metric_is_left_alone(tmp_path):

@@ -10,6 +10,7 @@ or naming variant is a one-line change here.
 """
 
 import glob
+import json
 import os
 import re
 
@@ -27,6 +28,64 @@ _WINDOW_LABEL_RE = re.compile(
     r'((?:\d+H|ET\d)_\d+-\d+min)'                 # capture the label
     r'_merged\.json$'
 )
+
+
+def load_plan_window_ids(match_dir: str) -> list:
+    """The window ids window_plan.json names, in plan order.
+
+    Raises rather than returning an empty list: every caller here uses the
+    result to decide what is a window, and an empty answer silently reads as
+    "nothing is a window".
+    """
+    path = os.path.join(match_dir, "window_plan.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"load_plan_window_ids: no window_plan.json in {match_dir}. "
+            f"window identity has no other source.")
+    with open(path, encoding="utf-8") as f:
+        plan = json.load(f)
+    ids = [str(w.get("agent_id") or w.get("window_id") or "")
+           for w in plan.get("windows", [])]
+    ids = [i for i in ids if i]
+    if not ids:
+        raise ValueError(
+            f"load_plan_window_ids: window_plan.json in {match_dir} names no "
+            f"windows.")
+    return ids
+
+
+_STRUCTURAL_RE = re.compile(r'^agent_(.+?)_structural\.json$')
+
+
+def structural_files(logs_dir: str, plan_window_ids=None) -> list:
+    """Structural agent outputs for planned analysis windows, in plan order.
+
+    agent_logs also holds burst output. A set-piece burst is submitted under
+    the id "{window_id}_{anchor_ts}", so its structural sibling lands as
+    agent_01_03m00s_structural.json -- and a bare glob for "*structural*.json"
+    collects it alongside the real windows.
+
+    On the Gorleston match that was 18 files out of 39, every one of them an
+    analysis of minutes 0-5: the burst had no window record, so frame
+    selection fell back to start_s=0/end_s=300 and each agent was handed the
+    same opening five minutes. They inflated the formation distribution to 39
+    votes, supplied the far-side sample observations, and padded the
+    press-trigger tallies -- 46% of the structural evidence base, all of it
+    one five-minute stretch counted eighteen times.
+
+    Sorted by plan order, not lexically: window ids sort correctly as
+    two-digit strings today, but plan order is what the callers mean.
+    """
+    if plan_window_ids is None:
+        plan_window_ids = load_plan_window_ids(
+            os.path.dirname(os.path.abspath(logs_dir)))
+    order = {str(w): i for i, w in enumerate(plan_window_ids)}
+    found = []
+    for fpath in glob.glob(os.path.join(logs_dir, "*structural*.json")):
+        m = _STRUCTURAL_RE.match(os.path.basename(fpath))
+        if m and m.group(1) in order:
+            found.append((order[m.group(1)], fpath))
+    return [p for _, p in sorted(found)]
 
 
 def derive_window_label(merged_path: str) -> str:

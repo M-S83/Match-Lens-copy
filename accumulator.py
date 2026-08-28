@@ -24,8 +24,9 @@ import os
 import sys
 import glob
 from datetime import datetime
-from pipeline_accessors import get_marking, get_match_id
-from pipeline_paths import derive_window_label
+from pipeline_accessors import (get_marking, get_match_id, normalise_side,
+                                resolve_team_side, resolve_side_from_team_name)
+from pipeline_paths import derive_window_label, structural_files
 from pipeline_schemas import stamp_schema_version
 
 
@@ -46,20 +47,20 @@ def _normalise_team_ref(value: str, mc: dict) -> str:
 
     v = str(value).lower().strip()
 
-    # Canonical strings
-    if v in ("home", "home_kit", "home_team"):
-        return "home"
-    if v in ("away", "away_kit", "away_team"):
-        return "away"
+    # Canonical strings and exact team-name matching both live in
+    # pipeline_accessors now. This function keeps its "unknown" contract
+    # because callers here tolerate an unresolved reference (agents write
+    # free-text team strings); the accessor raises, so it is called defensively.
+    canonical = normalise_side(v)
+    if canonical:
+        return canonical
+    try:
+        return resolve_side_from_team_name(v, mc)
+    except ValueError:
+        pass
 
-    # Team name matching
     home_name = str(mc.get("home_team", "")).lower().strip()
     away_name = str(mc.get("away_team", "")).lower().strip()
-
-    if home_name and v == home_name:
-        return "home"
-    if away_name and v == away_name:
-        return "away"
 
     # Partial match (handles "Gorleston FC" vs "Gorleston")
     if home_name and home_name in v:
@@ -891,7 +892,7 @@ def _majority_formation(logs_dir: str, team_key: str, mc: dict | None = None) ->
                 if side:
                     counts[side][m.group(1)] += 1
 
-    for fpath in glob.glob(os.path.join(logs_dir, "*structural*.json")):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding="utf-8") as f:
                 d = json.load(f)
@@ -920,7 +921,7 @@ def _formation_distribution(logs_dir: str, mc: "dict | None" = None) -> dict:
     form_re = _re.compile(r'\b(\d-\d-\d(?:-\d)?)\b')
     counts = {"home": Counter(), "away": Counter()}
 
-    for fpath in glob.glob(os.path.join(logs_dir, "*structural*.json")):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding="utf-8") as f:
                 d = json.load(f)
@@ -956,7 +957,7 @@ def _ip_shape_summary(logs_dir: str) -> dict:
     ip_home = Counter()
     ip_away = Counter()
 
-    for fpath in glob.glob(os.path.join(logs_dir, "*structural*.json")):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding="utf-8") as f:
                 d = json.load(f)
@@ -995,7 +996,7 @@ def _accumulate_far_side_shape(logs_dir: str, mc: dict) -> dict:
     observations = []
     windows_with_data = 0
 
-    for fpath in sorted(glob.glob(os.path.join(logs_dir, "*structural*.json"))):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding="utf-8") as f:
                 d = json.load(f)
@@ -1055,7 +1056,7 @@ def _accumulate_press_triggers(logs_dir: str, mc: dict) -> dict:
     away_triggers      = Counter()
     windows_with_data  = 0
 
-    for fpath in sorted(glob.glob(os.path.join(logs_dir, '*structural*.json'))):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding='utf-8') as f:
                 d = json.load(f)
@@ -1134,7 +1135,7 @@ def _accumulate_runner_patterns(logs_dir: str, mc: dict) -> dict:
     # Look in both raw structural files and merged files (3d_setpiece runs
     # contribute via the merge step).
     files = sorted(set(
-        glob.glob(os.path.join(logs_dir, '*structural*.json')) +
+        structural_files(logs_dir) +
         glob.glob(os.path.join(logs_dir, '*_merged.json')) +
         glob.glob(os.path.join(logs_dir, '*setpiece*.json'))
     ))
@@ -1218,7 +1219,10 @@ def _accumulate_player_tendencies(logs_dir: str, mc: dict) -> dict:
 
     for lineup in mc.get("lineups", []):
         team_name = lineup.get("team", {}).get("name", "")
-        side      = lineup.get("team_side", "")
+        # Was `lineup.get("team_side", "")`; nothing writes that key, so every
+        # roster entry carried side="" and the (side, number) index below could
+        # never disambiguate two players sharing a shirt number across teams.
+        side      = resolve_team_side(lineup, mc)
         for p in lineup.get("startXI", []) + lineup.get("substitutes", []):
             player = p.get("player", p)
             name   = player.get("name", "")
@@ -1438,12 +1442,15 @@ def _accumulate_player_tendencies(logs_dir: str, mc: dict) -> dict:
             player = p.get("player", p)
             if player.get("pos") == "GK":
                 name = player.get("name", "")
-                if lineup.get("team_side") == "home":
+                # Was `lineup.get("team_side") == "home"`, which was never true,
+                # so BOTH goalkeepers were written to gk_away (the second
+                # overwriting the first) and gk_home was never set at all.
+                if resolve_team_side(lineup, mc) == "home":
                     gk_home = name
                 else:
                     gk_away = name
 
-    for fpath in sorted(glob.glob(os.path.join(logs_dir, '*structural*.json'))):
+    for fpath in structural_files(logs_dir):
         try:
             with open(fpath, encoding='utf-8') as f:
                 d = json.load(f)
@@ -1885,7 +1892,7 @@ def accumulate_all_windows(match_dir: str) -> dict:
             # Count formation_basis values across all structural windows
             # to surface how many were confirmed vs. unverified vs. overridden.
             _basis_counts = {"home": {}, "away": {}}
-            for _fp in glob.glob(os.path.join(logs_dir, "*structural*.json")):
+            for _fp in structural_files(logs_dir):
                 try:
                     with open(_fp, encoding="utf-8") as _f:
                         _d = json.load(_f)
@@ -2044,11 +2051,12 @@ def build_shots_log(match_dir: str) -> dict:
         return str(team)
 
     def _team_side(team_name: str) -> str:
-        if team_name == home_team:
-            return "home"
-        if team_name == away_team:
-            return "away"
-        return "unknown"
+        # Delegates to the canonical accessor; keeps the "unknown" contract
+        # because goal events may name a team this config does not know.
+        try:
+            return resolve_side_from_team_name(team_name, mc)
+        except ValueError:
+            return "unknown"
 
     def _player_name(ev: dict) -> str:
         player = ev.get("player", {})

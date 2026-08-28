@@ -39,15 +39,22 @@ from pipeline_schemas import stamp_schema_version
 
 STATE_FILE = "pipeline_state.json"
 
-WINDOW_STEPS  = [
-    "3a", "3b", "3d_event", "3d_setpiece", "3d_recovery", "3e_merge",
-    # v3 port Step 14: player-action confirmation batch step. Tracked
-    # per-window (each accepted player_escalation_queue item carries
-    # source_window) so collect_results can update the right window
-    # entry. Step 1 (commit d0a2414) deferred this WINDOW_STEPS
-    # addition until the actual Phase 3b-player block landed.
-    "3i_player_action",
-]
+# Steps belonging to an analysis window. A window's identity is minted by
+# window_plan.json and by nothing else.
+WINDOW_STEPS  = ["3a", "3b", "3d_event", "3d_recovery", "3e_merge"]
+
+# Steps belonging to a BURST, which is not a window. A burst is a short
+# high-fps re-run anchored on one queued event; its id is
+# "{window_id}_{anchor_ts}" (e.g. "01_03m00s") and it is minted at run time
+# by the confirmation queue, not by the plan.
+#
+# These two used to sit in WINDOW_STEPS. Recording a burst result through
+# mark_window therefore created a full window record under the burst id with
+# every window step pending -- including 3a. PHASE 1 found 3a pending and
+# paid to run the structural agent against a window that does not exist:
+# eight of them in the run of 2026-08-24, each silently handed minutes 0-5
+# because get_window_frames defaults an absent window to start_s=0/end_s=300.
+BURST_STEPS   = ["3d_setpiece", "3i_player_action"]
 PIPELINE_STEPS = [
     "2b_jersey_ocr",
     "3c_triage", "3d_reruns", "3e_merge",
@@ -72,10 +79,6 @@ PIPELINE_STEPS = [
     "3l_synthesis",
     "4a_tactical_report", "4b_opposition_report",
 ]
-# Note: 3i_player_action (per-window) is intentionally NOT added to
-# WINDOW_STEPS at this time. The player-action confirmation loop is
-# Step 14 of the v3 porting sequence; the WINDOW_STEPS entry is added
-# in that step, not here, to keep this state-machine change minimal.
 
 
 def load_state(match_dir: str) -> dict:
@@ -122,6 +125,7 @@ def init_state(match_dir: str, match_name: str, windows: list,
         "started":   datetime.now().isoformat(),
         "quality":   quality,
         "windows":   {w: {s: "pending" for s in WINDOW_STEPS} for w in windows},
+        "bursts":    {},
         "steps":     {s: "pending" for s in PIPELINE_STEPS},
         "batch_ids": {},
         "errors":    [],
@@ -134,9 +138,24 @@ def init_state(match_dir: str, match_name: str, windows: list,
 
 def mark_window(match_dir: str, state: dict, window_id: str,
                 step: str, status: str, error: str = None) -> dict:
-    """Mark a window step as complete/failed/skipped."""
-    if window_id not in state["windows"]:
-        state["windows"][window_id] = {s: "pending" for s in WINDOW_STEPS}
+    """Mark a step on an EXISTING window as complete/failed/skipped.
+
+    An unknown window id is a bug, not a window. This function used to mint
+    one -- a full WINDOW_STEPS skeleton -- as a side effect of recording a
+    status, which is how burst ids ("01_03m00s") became windows carrying a
+    pending 3a that PHASE 1 then paid to run. Burst-keyed steps belong in
+    mark_burst(); reconcile_with_plan() repairs state written before this.
+    """
+    if step in BURST_STEPS:
+        raise ValueError(
+            f"mark_window: {step!r} is a burst step; use mark_burst()."
+        )
+    if window_id not in state.get("windows", {}):
+        raise KeyError(
+            f"mark_window: {window_id!r} is not a window in window_plan.json "
+            f"(known: {sorted(state.get('windows', {}))}). If this is a burst "
+            f"id, the caller should be using mark_burst()."
+        )
     state["windows"][window_id][step] = status
     state["last_updated"] = datetime.now().isoformat()
     if error:
@@ -145,6 +164,107 @@ def mark_window(match_dir: str, state: dict, window_id: str,
             "error": error, "time": datetime.now().isoformat()
         })
     _save(match_dir, state)
+    return state
+
+
+def mark_burst(match_dir: str, state: dict, burst_id: str,
+               step: str, status: str, error: str = None) -> dict:
+    """Mark a burst step as complete/failed/skipped.
+
+    Unlike windows, bursts ARE minted here: the confirmation queue decides at
+    run time which events get a high-fps re-run, so the id cannot come from
+    the plan. They live in their own namespace so nothing that walks
+    state["windows"] -- pending_windows, print_progress, the --force resets --
+    can mistake one for an analysis window.
+    """
+    if step not in BURST_STEPS:
+        raise ValueError(
+            f"mark_burst: {step!r} is not a burst step {BURST_STEPS}."
+        )
+    bursts = state.setdefault("bursts", {})
+    if burst_id not in bursts:
+        bursts[burst_id] = {s: "pending" for s in BURST_STEPS}
+    bursts[burst_id][step] = status
+    state["last_updated"] = datetime.now().isoformat()
+    if error:
+        state["errors"].append({
+            "burst": burst_id, "step": step,
+            "error": error, "time": datetime.now().isoformat()
+        })
+    _save(match_dir, state)
+    return state
+
+
+def mark_result(match_dir: str, state: dict, item_id: str,
+                step: str, status: str, error: str = None) -> dict:
+    """Record a batch result in the namespace its step belongs to.
+
+    The single place that decides whether a batch custom_id names a window or
+    a burst. collect_results used to assume "window" for everything, which is
+    how burst ids reached mark_window and became windows carrying a pending,
+    payable 3a. Keep this the only implementation of that decision.
+    """
+    fn = mark_burst if step in BURST_STEPS else mark_window
+    return fn(match_dir, state, item_id, step, status, error)
+
+
+def reconcile_with_plan(match_dir: str, state: dict, plan_window_ids) -> dict:
+    """Make state["windows"] hold exactly the windows window_plan.json names.
+
+    Call once per run, immediately after the state is loaded. Three repairs,
+    all of state written by builds where mark_window minted identity:
+
+      * entries absent from the plan are burst records in the wrong
+        namespace -- moved to state["bursts"] with their burst-step statuses
+        intact, so completed burst work is never re-paid;
+      * burst-only steps left on genuine window records are dropped;
+      * plan windows missing from state are added as pending.
+    """
+    plan_ids = [str(w) for w in plan_window_ids]
+    if not plan_ids:
+        raise ValueError(
+            "reconcile_with_plan: window_plan.json named no windows. Refusing "
+            "to reconcile -- every existing window would be treated as an "
+            "orphan and moved out of the analysis namespace."
+        )
+    known   = set(plan_ids)
+    windows = state.setdefault("windows", {})
+    bursts  = state.setdefault("bursts", {})
+
+    orphans = [wid for wid in list(windows) if wid not in known]
+    for wid in orphans:
+        rec    = windows.pop(wid)
+        merged = bursts.get(wid, {})
+        for s in BURST_STEPS:
+            if merged.get(s) in (None, "pending") and rec.get(s):
+                merged[s] = rec[s]
+            merged.setdefault(s, "pending")
+        bursts[wid] = merged
+
+    stripped = 0
+    for rec in windows.values():
+        for s in BURST_STEPS:
+            if rec.pop(s, None) is not None:
+                stripped += 1
+
+    missing = [wid for wid in plan_ids if wid not in windows]
+    for wid in missing:
+        windows[wid] = {s: "pending" for s in WINDOW_STEPS}
+
+    if orphans or missing or stripped:
+        if orphans:
+            print(f"  [STATE] Reconciled with window_plan.json: moved "
+                  f"{len(orphans)} burst record(s) out of the window "
+                  f"namespace ({', '.join(sorted(orphans)[:4])}"
+                  f"{'...' if len(orphans) > 4 else ''}).")
+        if stripped:
+            print(f"  [STATE] Dropped {stripped} burst-only step entr(ies) "
+                  f"from window records.")
+        if missing:
+            print(f"  [STATE] Added {len(missing)} plan window(s) absent from "
+                  f"state: {', '.join(missing[:6])}"
+                  f"{'...' if len(missing) > 6 else ''}.")
+        _save(match_dir, state)
     return state
 
 
@@ -206,6 +326,14 @@ def print_progress(state: dict):
         status = state.get("steps", {}).get(step, "pending")
         icon   = "[OK]" if status == "complete" else "[FAIL]" if status == "failed" else "-"
         print(f"  {icon} {step}")
+    bursts = state.get("bursts", {})
+    if bursts:
+        print()
+        for step in BURST_STEPS:
+            done   = sum(1 for b in bursts.values() if b.get(step) == "complete")
+            failed = sum(1 for b in bursts.values() if b.get(step) == "failed")
+            print(f"  {step:<14} {done}/{len(bursts)} bursts"
+                  + (f" [{failed} FAILED]" if failed else ""))
     if state.get("errors"):
         print(f"\n  Errors: {len(state['errors'])}")
         for e in state["errors"][-3:]:

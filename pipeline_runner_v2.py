@@ -21,6 +21,9 @@ from pipeline_accessors import (
     get_formation_away,
     get_window_start_seconds,
     get_window_end_seconds,
+    resolve_team_side,
+    get_kickoff_seconds,
+    match_minute_to_video_s,
 )
 from pipeline_paths import (find_agent_output, find_merged_window,
                             frame_sort_key)
@@ -74,7 +77,8 @@ def _kits(mc: dict) -> dict:
 
 from pipeline_state  import (init_state, load_state, mark_window, mark_step,
                                is_window_done, is_step_done, pending_windows,
-                               failed_windows, print_progress, PIPELINE_STEPS)
+                               failed_windows, print_progress, PIPELINE_STEPS,
+                               reconcile_with_plan, BURST_STEPS)
 from batch_runner    import submit_batch, poll_batch, collect_results, with_retry
 # v3 port Step 11: live consumers of three v3 reference modules
 # (visibility_minimums, watch_list_aggregator). pitch_validation and the
@@ -83,7 +87,8 @@ from visibility_minimums    import compute_minimums as _v3_compute_minimums
 from watch_list_aggregator  import inject_watch_list_into_prompt as _v3_inject_watch_list
 # Fix 42: surface the API model string into pipeline state and the report manifest.
 from batch_runner    import MODEL as API_MODEL
-from cost_estimator  import load_match_data, calculate_cost, print_estimate
+from cost_estimator  import (load_match_data, calculate_cost, print_estimate,
+                             estimate_remaining)
 
 
 # ── Frame resize helper ───────────────────────────────────────────────────────
@@ -139,10 +144,28 @@ def _prepare_frames(frame_paths: list,
 
 # ── Frame sampling ────────────────────────────────────────────────────────────
 
+# Jersey OCR budget. Step 2b is free (local CPU) and its output is read by
+# build_player_prompt to give the player agent a shirt-number -> name binding.
+# Without it the agent infers identities, which is how a run ends up naming
+# the wrong players. 45 minutes is generous for ~250 full-HD frames on CPU;
+# the step still self-skips on failure, so an over-run costs time, not money.
+OCR_TIMEOUT_S = 2700
+
+# Anthropic bills an image at up to 1568 tokens and downsamples anything larger
+# to fit, so sending 1920x1080 costs exactly the same as sending the largest
+# frame that fits under the cap -- you pay the ceiling either way. At 1024x576
+# a frame costs ~786 tokens, half as much, and the jersey number on a near-ball
+# player is still legible (verified by inspection on Veo footage). Frames are
+# ~85% of input spend, so this is the single largest lever available.
+#
+# Jersey OCR is unaffected: it runs locally on the full-resolution frames on
+# disk and never sees these resized copies.
+API_FRAME_W, API_FRAME_H = 1024, 576
+
 QUALITY_PROFILES = {
-    "economy":      {"frames_per_window": 10, "event_frames": 10, "resize_w": None, "resize_h": None},
-    "standard":     {"frames_per_window": 30, "event_frames": 30, "resize_w": None, "resize_h": None},
-    "full":         {"frames_per_window": 60, "event_frames": 60, "resize_w": None, "resize_h": None},
+    "economy":      {"frames_per_window": 10, "event_frames": 10, "resize_w": API_FRAME_W, "resize_h": API_FRAME_H},
+    "standard":     {"frames_per_window": 30, "event_frames": 30, "resize_w": API_FRAME_W, "resize_h": API_FRAME_H},
+    "full":         {"frames_per_window": 60, "event_frames": 60, "resize_w": API_FRAME_W, "resize_h": API_FRAME_H},
     "high_density": {"frames_per_window": 90, "event_frames": 90, "resize_w": 512,  "resize_h": 288},
     "full_1fps":    {"frames_per_window": 90, "event_frames": 90, "resize_w": 512,  "resize_h": 288},
 }
@@ -164,11 +187,75 @@ QUALITY_PROFILES = {
 #   any external scripts / docs referencing "full_1fps".
 
 def sample_frames(all_frames: list, n: int) -> list:
-    """Select n evenly spaced frames from a list."""
-    if len(all_frames) <= n:
+    """Select n frames, evenly spread in time but picking the best in each slot.
+
+    The previous implementation was `all_frames[::step][:n]` -- every Nth frame,
+    with no regard for whether the frame was worth 786 tokens. Adjacent 1fps
+    frames measure 0.9997 similar in a static passage, and a window of 300
+    frames reliably contains motion-blurred ones and stoppages showing very
+    little pitch. Paying full price for those and none for the sharp frame two
+    seconds later is straightforwardly wasteful.
+
+    Divides the window into n equal time buckets and takes the best frame from
+    each, so temporal coverage is identical to the old behaviour while the
+    frames themselves are the most legible available. Scoring uses
+    frame_preprocessor (local, free); if it or Pillow is unavailable the
+    function falls back to the original even-spacing so a bare checkout still
+    runs.
+    """
+    if len(all_frames) <= n or n <= 0:
         return all_frames
-    step = max(1, len(all_frames) // n)
-    return all_frames[::step][:n]
+
+    buckets = []
+    size = len(all_frames) / n
+    for i in range(n):
+        lo, hi = int(i * size), max(int(i * size) + 1, int((i + 1) * size))
+        buckets.append(all_frames[lo:hi])
+
+    try:
+        from PIL import Image
+        from frame_preprocessor import blur_score, green_coverage
+    except Exception:
+        return [b[len(b) // 2] for b in buckets if b]
+
+    # Score on a thumbnail, never the full frame. Laplacian variance and green
+    # coverage are both scale-tolerant, and PIL's JPEG draft mode decodes
+    # straight to a reduced size rather than decoding 1920x1080 and throwing
+    # the pixels away. Measured: 176 ms/frame at full resolution against
+    # 1.0 ms on a 320x180 thumbnail. A 31-window run scores ~9300 frames, so
+    # the difference is 27 minutes of silent CPU before the first API call
+    # versus about six seconds.
+    SCORE_W, SCORE_H = 320, 180
+    # Cap work per bucket: the best of a handful of evenly-spread candidates is
+    # indistinguishable from the best of all of them, and bounds the cost.
+    MAX_CANDIDATES = 4
+
+    def score(path):
+        try:
+            with Image.open(path) as im:
+                im.draft("RGB", (SCORE_W, SCORE_H))   # JPEG-native downscale
+                im = im.convert("RGB")
+                im.thumbnail((SCORE_W, SCORE_H), Image.BILINEAR)
+                # Sharpness dominates: a blurred frame costs the same as a sharp
+                # one and tells the agent less. green_coverage guards against
+                # replays, crowd cutaways and tight non-pitch shots.
+                return blur_score(im) * (0.25 + green_coverage(im))
+        except Exception:
+            return 0.0
+
+    picked = []
+    for b in buckets:
+        if not b:
+            continue
+        if len(b) == 1:
+            picked.append(b[0]); continue
+        if len(b) > MAX_CANDIDATES:
+            step = len(b) / MAX_CANDIDATES
+            cand = [b[min(len(b) - 1, int(i * step))] for i in range(MAX_CANDIDATES)]
+        else:
+            cand = b
+        picked.append(max(cand, key=score))
+    return picked or all_frames[:n]
 
 def _frame_seconds(fname: str) -> float:
     """Parse seconds from frame_MMmSSs.jpg filenames. Returns -1 if unparseable."""
@@ -1344,7 +1431,14 @@ Match state:       {ms['label']}
     home_lineup_lines = []
     away_lineup_lines = []
     for lineup in mc.get("lineups", []):
-        side = lineup.get("team_side", "")
+        # Was `lineup.get("team_side", "")`. Nothing in the pipeline writes
+        # team_side, so side was "" for every lineup, `side == "home"` was
+        # never true, and all 32 players from both squads landed in
+        # away_lineup_lines. The 3b agent was shown a single roster labelled
+        # away and tagged 176 of 223 observations to the wrong team -- in the
+        # observation prose as well as the field. Resolve from the team name,
+        # and raise rather than default.
+        side = resolve_team_side(lineup, mc)
         for p in lineup.get("startXI", []) + lineup.get("substitutes", []):
             player = p.get("player", p)
             name   = player.get("name", "")
@@ -2158,23 +2252,50 @@ def run_pipeline(match_dir: str, quality: str = "standard",
     # ── Cost check ────────────────────────────────────────────────────────────
     match_data = load_match_data(match_dir)
     estimate   = calculate_cost(match_data, quality)
-    print(f"  Estimated cost: ${estimate['total_cost_usd']:.2f} ({quality})")
-    print(f"  API calls:      {estimate['api_calls_total']}")
+    # What THIS run will spend, not what the match would cost from scratch.
+    # The full figure printed above "Check balance" on every resumed run reads
+    # as a spend warning, and quoting $8.46 for three synthesis calls four
+    # times in a row teaches the operator to ignore the line entirely.
+    _remaining = estimate_remaining(match_dir, match_data, quality)
+    if _remaining is None:
+        print(f"  Estimated cost: ${estimate['total_cost_usd']:.2f} ({quality}) "
+              f"-- full match, nothing done yet")
+        print(f"  API calls:      {estimate['api_calls_total']}")
+    else:
+        print(f"  This run:       ${_remaining['cost_usd']:.2f}  "
+              f"({_remaining['api_calls']} API calls)")
+        print(f"  Full match:     ${estimate['total_cost_usd']:.2f} ({quality}) "
+              f"-- already paid: "
+              f"${max(0.0, estimate['total_cost_usd'] - _remaining['cost_usd']):.2f}")
+        for _w in _remaining.get("notes", []):
+            print(f"  [WARN] cost estimate: {_w}")
     print(f"  Frames/window:  {fpw}")
     print(f"\n  Using Message Batches API (50% cheaper, async, resumable)")
     print(f"  Check balance: https://console.anthropic.com/settings/billing\n")
 
     # ── State ─────────────────────────────────────────────────────────────────
+    _resumed = False
     if resume:
         state = load_state(match_dir)
         if not state:
             print("  No state file found. Starting fresh.")
             state = init_state(match_dir, mc.get("match","?"), window_ids, quality)
         else:
-            print("  Resuming from checkpoint:")
-            print_progress(state)
+            _resumed = True
     else:
         state = init_state(match_dir, mc.get("match","?"), window_ids, quality)
+
+    # window_plan.json is the only thing that mints window identity. State
+    # written by earlier builds can hold burst ids in the window namespace
+    # (mark_window used to create a window record for any id it was handed),
+    # and every one of those carries a pending 3a that PHASE 1 will pay to
+    # run. Reconcile before any phase reads pending_windows() -- and before
+    # the checkpoint is printed, so the operator sees the counts the run will
+    # actually use rather than the pre-migration ones.
+    state = reconcile_with_plan(match_dir, state, window_ids)
+    if _resumed:
+        print("  Resuming from checkpoint:")
+        print_progress(state)
 
     # Fix 41: clear stale errors so the run-summary "Errors: N" line at the
     # end of the run reflects only this session. state["errors"] is otherwise
@@ -2219,10 +2340,18 @@ def run_pipeline(match_dir: str, quality: str = "standard",
         else:
             import subprocess as _sub2b
             try:
+                # 600s was never enough. A 2-hour match at 1fps sampled every
+                # 30s is ~246 full-HD frames, and EasyOCR on CPU runs 2-5s a
+                # frame, so the step timed out on every run it has ever made
+                # and self-skipped -- leaving the player agent with no
+                # number-to-name binding and forcing it to infer identities.
+                # Jersey numbers ARE legible at native resolution on this
+                # footage (verified by inspection), so the failure was the
+                # budget, not the optics.
                 _result = _sub2b.run(
                     [sys.executable, _ocr_script, match_dir,
                      "--sample-rate", "30"],
-                    capture_output=True, text=True, timeout=600
+                    capture_output=True, text=True, timeout=OCR_TIMEOUT_S
                 )
                 if _result.returncode == 0:
                     mark_step(match_dir, state, "2b_jersey_ocr", "complete")
@@ -2260,8 +2389,9 @@ def run_pipeline(match_dir: str, quality: str = "standard",
                                           step="3a"))
 
         batch_id = with_retry(lambda: submit_batch(match_dir, state, requests, "3a"))
-        batch    = poll_batch(batch_id)
-        collect_results(batch_id, match_dir, state, "3a")
+        if batch_id:
+            batch = poll_batch(batch_id)
+            collect_results(batch_id, match_dir, state, "3a")
     else:
         print("  PHASE 1: Step 3a — already complete (all windows)")
 
@@ -2310,8 +2440,9 @@ def run_pipeline(match_dir: str, quality: str = "standard",
                                           step="3b"))
 
         batch_id = with_retry(lambda: submit_batch(match_dir, state, requests, "3b"))
-        batch    = poll_batch(batch_id)
-        collect_results(batch_id, match_dir, state, "3b")
+        if batch_id:
+            batch = poll_batch(batch_id)
+            collect_results(batch_id, match_dir, state, "3b")
     else:
         print("  PHASE 2: Step 3b — already complete")
 
@@ -3295,22 +3426,26 @@ if __name__ == "__main__":
             for wid, steps in state["windows"].items():
                 if steps.get("3d_event") == "failed":
                     steps["3d_event"] = "skipped"
-                # v3 port Step 15: drop any prior 3i_player_action result so
-                # the Phase 3b-player block re-processes the regenerated queue.
-                if "3i_player_action" in steps:
-                    steps["3i_player_action"] = "pending"
+            # Drop prior player-action confirmations so the Phase 3b-player
+            # block re-processes the regenerated queue. These are bursts, not
+            # windows: resetting them per-window is what put a pending burst
+            # step on all 21 analysis windows.
+            for _b in state.get("bursts", {}).values():
+                _b["3i_player_action"] = "pending"
             from pipeline_state import _save as _ps_save
             _ps_save(args.match_dir, state)
             print("  State reset for merge + reports. Re-running...")
         if args.force_structural:
-            # Reset 3a + 3b windows to pending, and 3e downstream steps.
-            # v3 port Step 15: added 3i_player_action to the per-window reset
-            # tuple, and 3e_zone_normalise / 3i_player_escalation /
-            # 3k2_player_cards to the pipeline-step reset list.
+            # state["windows"] holds exactly the plan's windows -- burst ids
+            # live in state["bursts"] and reconcile_with_plan() moved any
+            # written by an older build. The read of window_plan.json that
+            # used to filter pseudo-windows out here is therefore gone: this
+            # loop can no longer reach one.
             for wid in state.get("windows", {}):
-                for wstep in ("3a", "3b", "3i_player_action"):
-                    if wstep in state["windows"][wid]:
-                        state["windows"][wid][wstep] = "pending"
+                for wstep in ("3a", "3b"):
+                    state["windows"][wid][wstep] = "pending"
+            for _b in state.get("bursts", {}).values():
+                _b["3i_player_action"] = "pending"
             for step in ["3e_merge","3e_zone_normalise",
                          "3f_shots","3f_sequences","3g_summary",
                          "3h_ground_truth","3i_escalation",

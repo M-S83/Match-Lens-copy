@@ -21,7 +21,7 @@ Usage:
 
 import json, os, time, anthropic
 from datetime import datetime
-from pipeline_state import mark_window, store_batch_id
+from pipeline_state import mark_result, store_batch_id
 from pipeline_schemas import stamp_schema_version
 
 
@@ -123,6 +123,14 @@ def submit_batch(match_dir: str, state: dict,
     batches and return a comma-separated composite id. poll_batch and
     collect_results detect this and iterate.
     """
+    # A batch with zero requests is a 400 from the API, not a no-op. It happens
+    # when every window in the pending list turns out to have no frames to send
+    # -- set-piece pseudo-windows, for instance. Skipping is the correct
+    # behaviour and the caller treats a None batch id as "nothing to do".
+    if not requests:
+        print(f"  [BATCH] No requests to submit for step {step} -- skipping.")
+        return None
+
     # Fix 35 B: fail fast on billing issues -- otherwise the batch endpoint
     # masks them as transient connection errors and the retry loop wastes
     # ~10 minutes before giving up.
@@ -264,7 +272,8 @@ def collect_results(batch_id: str, match_dir: str,
                     state: dict, step: str) -> dict:
     """
     Iterate batch results and write each to the standard agent_logs path.
-    Returns dict of {window_id: output_path or error}.
+    Returns dict of {item_id: output_path or error}, where item_id is a
+    window id for window steps and a burst id for burst steps.
 
     Fix 36b: handles comma-separated composite batch_id from chunked submits
     by collecting from each chunk and merging the per-window results dict.
@@ -281,6 +290,12 @@ def collect_results(batch_id: str, match_dir: str,
         "3d_recovery": "recovery",
     }
     suffix = suffix_map.get(step, step)
+
+    # A batch's custom_id is a window id for window steps and a burst id
+    # ("{window_id}_{anchor_ts}") for burst steps. mark_result routes on the
+    # step. Routing everything through mark_window is what let a burst id
+    # into the window namespace, where it became a window carrying a pending
+    # 3a that PHASE 1 then paid to run.
 
     # Fix 36b: split composite batch_id into individual chunks. Each chunk's
     # results iterator is fetched independently with retry (same protection
@@ -301,7 +316,7 @@ def collect_results(batch_id: str, match_dir: str,
 
     for result in all_results:
         custom_id = result.custom_id
-        window_id = custom_id.replace(f"_{step}", "")
+        item_id   = custom_id.replace(f"_{step}", "")
 
         if result.result.type == "succeeded":
             message = result.result.message
@@ -328,14 +343,14 @@ def collect_results(batch_id: str, match_dir: str,
                 output = json.loads(clean)
             except json.JSONDecodeError as e:
                 output = {"raw_text": raw_text, "parse_error": str(e)}
-                mark_window(match_dir, state, window_id, step, "failed",
+                mark_result(match_dir, state, item_id, step, "failed",
                             f"JSON parse error: {e}")
-                results[window_id] = {"status": "parse_error", "error": str(e)}
+                results[item_id] = {"status": "parse_error", "error": str(e)}
                 continue
 
             # Write to agent_logs
             out_path = os.path.join(agent_logs,
-                f"agent_{window_id}_{suffix}.json")
+                f"agent_{item_id}_{suffix}.json")
             # Fix 34a P2.2: guard the file write -- disk full, permission
             # denied, AV scanner lock (Windows) etc. should fail this window
             # rather than crash the whole collection loop.
@@ -347,14 +362,14 @@ def collect_results(batch_id: str, match_dir: str,
                     json.dump(stamp_schema_version(output, f"agent_{suffix}"), f, indent=2)
             except OSError as _ioe:
                 print(f"  [ERROR] Failed to write {out_path}: {_ioe}")
-                mark_window(match_dir, state, window_id, step, "failed",
+                mark_result(match_dir, state, item_id, step, "failed",
                             f"file_write_error: {_ioe}")
-                results[window_id] = {"status": "failed",
-                                       "error": f"file_write_error: {_ioe}"}
+                results[item_id] = {"status": "failed",
+                                    "error": f"file_write_error: {_ioe}"}
                 continue
 
-            mark_window(match_dir, state, window_id, step, "complete")
-            results[window_id] = {"status": "complete", "path": out_path}
+            mark_result(match_dir, state, item_id, step, "complete")
+            results[item_id] = {"status": "complete", "path": out_path}
 
         else:
             # Fix 34a P2.1: typed error messages by result.result.type so
@@ -369,8 +384,8 @@ def collect_results(batch_id: str, match_dir: str,
                 error_msg = str(_err) if _err else "Unknown error (no detail returned)"
             else:
                 error_msg = f"Unexpected result type: {_rtype}"
-            mark_window(match_dir, state, window_id, step, "failed", error_msg)
-            results[window_id] = {"status": "failed", "error": error_msg}
+            mark_result(match_dir, state, item_id, step, "failed", error_msg)
+            results[item_id] = {"status": "failed", "error": error_msg}
 
     successes = sum(1 for r in results.values() if r["status"] == "complete")
     failures  = sum(1 for r in results.values() if r["status"] != "complete")

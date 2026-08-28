@@ -179,3 +179,114 @@ def test_every_derived_field_names_sources_that_are_monitored():
     monitored = {f"{src}.{f}" for src, f, _ in MONITORED}
     for derived, sources in DERIVED_FIELDS.items():
         assert any(s in monitored for s in sources), derived
+
+
+# ── a default two fields share ────────────────────────────────────────────
+#
+# Dominance alone could not catch pressing. home_intensity was 3.5 in twenty
+# windows of twenty and was correctly withheld. away_intensity was 3.5 in
+# seventeen of twenty -- 85%, just under the 90% threshold -- so it passed as
+# measured, and the report published "away pressing intensity was
+# directionally measurable at 3.5".
+#
+# Lowering the threshold would be a guess. The tell is not the share: it is
+# that both fields keep returning the SAME number. One of them provably is
+# not measuring anything, so a sibling answering with that same value is
+# reading the same default.
+
+import json
+
+import field_variance as _FV
+
+
+def _fields(**specs):
+    """{'list.field': (verdict, {value: count}, share)} -> a fields dict."""
+    out = {}
+    for key, (verdict, values, share) in specs.items():
+        out[key.replace("__", ".")] = {
+            "verdict": verdict, "values": values, "dominant_share": share,
+            "windows_total": 20, "windows_with_value": 20,
+            "distinct": len(values), "family": key.split("__")[0]}
+    return out
+
+
+def test_a_sibling_that_keeps_returning_the_stuck_value_is_anchored():
+    """The Gorleston pressing case."""
+    fields = _fields(
+        pressing_by_window__home_intensity=(_FV.NOT_MEASURED, {3.5: 20}, 1.0),
+        pressing_by_window__away_intensity=(
+            _FV.MEASURED, {3.5: 17, 5.5: 1, 2.5: 1, 2.0: 1}, 0.85))
+    flagged = _FV.mark_shared_defaults(fields)
+
+    assert flagged == ["pressing_by_window.away_intensity"]
+    rec = fields["pressing_by_window.away_intensity"]
+    assert rec["verdict"] == _FV.ANCHORED
+    assert rec["anchored_on"] == "pressing_by_window.home_intensity"
+    assert "3.5" in rec["reason"]
+
+
+def test_a_sibling_with_a_DIFFERENT_modal_value_survives():
+    """The check that this discriminates instead of flagging everything.
+
+    home_height_pct is stuck at 45.0 while away_height_pct's modal value is
+    40.0. Different numbers, so the away line is moving on its own.
+    """
+    fields = _fields(
+        line_height_m_by_window__home_height_pct=(
+            _FV.NEAR_CONSTANT, {45.0: 19, 55.0: 1}, 0.95),
+        line_height_m_by_window__away_height_pct=(
+            _FV.MEASURED, {40.0: 13, 50.0: 3, 42.0: 2, 45.0: 1, 48.0: 1}, 0.65))
+    assert _FV.mark_shared_defaults(fields) == []
+    assert (fields["line_height_m_by_window.away_height_pct"]["verdict"]
+            == _FV.MEASURED)
+
+
+def test_fields_in_different_lists_do_not_anchor_each_other():
+    """A coincidence of value across unrelated families is not evidence."""
+    fields = _fields(
+        pressing_by_window__home_intensity=(_FV.NOT_MEASURED, {50.0: 20}, 1.0),
+        possession_by_window__focus_pct=(_FV.MEASURED, {50.0: 15, 60.0: 5}, 0.75))
+    assert _FV.mark_shared_defaults(fields) == []
+
+
+def test_a_genuinely_varied_field_is_not_anchored_by_a_rare_match():
+    """Below ANCHOR_SHARE the modal value is not a default, it is a mode."""
+    fields = _fields(
+        pressing_by_window__home_intensity=(_FV.NOT_MEASURED, {3.5: 20}, 1.0),
+        pressing_by_window__away_intensity=(
+            _FV.MEASURED, {3.5: 6, 5.5: 5, 2.5: 5, 2.0: 4}, 0.30))
+    assert _FV.mark_shared_defaults(fields) == []
+
+
+def test_anchored_counts_as_unmeasured():
+    assert _FV.ANCHORED in _FV.UNMEASURED
+
+
+def test_the_whole_pressing_family_is_withheld_end_to_end(tmp_path):
+    rows = []
+    for i, away in enumerate([3.5] * 17 + [5.5, 2.5, 2.0]):
+        rows.append({"window": f"w{i:02d}", "home_intensity": 3.5,
+                     "away_intensity": away, "peak": max(3.5, away),
+                     "avg_score": round((3.5 + away) / 2, 2),
+                     "observations": [{"trigger": "back_pass"}]})
+    summary = {"match": "t", "pressing_by_window": rows}
+    report  = _FV.compute(str(tmp_path), running_summary=summary, write=False)
+
+    assert report["anchored"], "away_intensity passed the dominance test again"
+    out = _FV.redact(summary, report)
+    for field in ("home_intensity", "away_intensity", "avg_score", "peak"):
+        assert out["pressing_by_window"][0][field] == _FV.NOT_MEASURED, field
+    assert out["pressing_by_window"][0]["observations"], (
+        "the press TRIGGERS vary and are the real pressing signal; only the "
+        "manufactured number should go")
+
+
+def test_json_round_tripped_values_still_compare():
+    """values keys are floats in memory and strings once read back from
+    field_variance.json, which is the only way this is ever run."""
+    fields = _fields(
+        pressing_by_window__home_intensity=(_FV.NOT_MEASURED, {3.5: 20}, 1.0),
+        pressing_by_window__away_intensity=(_FV.MEASURED, {3.5: 17, 2.0: 3}, 0.85))
+    round_tripped = json.loads(json.dumps(fields))
+    assert _FV.mark_shared_defaults(round_tripped) == [
+        "pressing_by_window.away_intensity"]

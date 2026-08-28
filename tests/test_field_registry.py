@@ -148,13 +148,50 @@ def test_peak_does_not_survive_the_redaction_of_its_source():
 
 
 def test_a_measured_sibling_still_survives():
-    """Redaction is per field. away_intensity varies and must be kept."""
-    summary = _pressing_summary()
+    """Redaction is per field: a sibling that moves on its own is kept.
+
+    This used to be demonstrated with _pressing_summary(), where away
+    intensity varies around a home value stuck at 3.5. That fixture is the
+    real Gorleston defect, and mark_shared_defaults now correctly withholds
+    the away field too -- its modal value IS the value home is stuck on.
+
+    The per-field property is still worth holding, so it is shown with line
+    height, where the away modal value (40.0) genuinely differs from the
+    stuck home one (45.0). That is the case the anchor rule must not touch.
+    """
+    rows = []
+    for i, away in enumerate([40.0, 40.0, 50.0, 42.0, 40.0, 48.0,
+                              40.0, 50.0, 40.0, 45.0]):
+        rows.append({"window": f"w{i:02d}", "agent_id": f"{i:02d}",
+                     "home_height_pct": 45.0, "away_height_pct": away,
+                     "avg_pct": round((45.0 + away) / 2, 1),
+                     "avg_m_approx": None, "line_width_m_approx": None,
+                     "space_behind_m": None, "shifts": []})
+    summary = {"match": "t", "line_height_m_by_window": rows}
     report  = FV.compute("", running_summary=summary, write=False)
-    out     = FV.redact(summary, report)
-    aways   = [r["away_intensity"] for r in out["pressing_by_window"]]
+
+    assert report["fields"][
+        "line_height_m_by_window.home_height_pct"]["verdict"] \
+        == FV.NOT_MEASURED
+    assert report["fields"][
+        "line_height_m_by_window.away_height_pct"]["verdict"] == FV.MEASURED
+
+    out   = FV.redact(summary, report)
+    aways = [r["away_height_pct"] for r in out["line_height_m_by_window"]]
     assert FV.NOT_MEASURED not in aways
     assert len(set(aways)) > 1
+
+
+def test_the_pressing_sibling_is_now_withheld_with_its_stuck_twin():
+    """The behaviour that replaced it, stated explicitly rather than left as
+    a silent change to the test above."""
+    summary = _pressing_summary()
+    report  = FV.compute("", running_summary=summary, write=False)
+    assert report["fields"]["pressing_by_window.away_intensity"]["verdict"] \
+        == FV.ANCHORED
+    out   = FV.redact(summary, report)
+    aways = [r["away_intensity"] for r in out["pressing_by_window"]]
+    assert set(aways) == {FV.NOT_MEASURED}
 
 
 # --------------------------------------------------------------------------

@@ -210,9 +210,80 @@ NO_DATA       = "no_data"
 # comes from how the data was assembled, so it carries no information about
 # what happened. See check_team_attribution.
 CONSTRUCTED   = "constructed"
+# A field that mostly returns the SAME value a stuck sibling is stuck on. It
+# varies enough to pass the dominance test, but the value it keeps returning
+# is the one the model falls back to when it cannot judge. See
+# mark_shared_defaults.
+ANCHORED      = "anchored"
 
 # Verdicts that mean "do not report this as an observed pattern".
-UNMEASURED = (NOT_MEASURED, NEAR_CONSTANT, CONSTRUCTED)
+UNMEASURED = (NOT_MEASURED, NEAR_CONSTANT, CONSTRUCTED, ANCHORED)
+
+# Share of windows a field's modal value must cover before that value counts
+# as its default. Deliberately below DOMINANT_SHARE: the whole point is to
+# catch fields that PASSED the dominance test.
+ANCHOR_SHARE = 0.6
+
+
+def _modal(rec):
+    """The value a field returned most often, or None."""
+    values = rec.get("values") or {}
+    if not values:
+        return None
+    top = max(values, key=values.get)
+    try:
+        return float(top)          # json.load turns object keys into strings
+    except (TypeError, ValueError):
+        return str(top)
+
+
+def mark_shared_defaults(fields: dict) -> list:
+    """Fields whose modal value is a stuck sibling's stuck value.
+
+    Dominance alone could not catch pressing on the Gorleston match.
+    home_intensity was 3.5 in twenty windows of twenty and was correctly
+    withheld. away_intensity was 3.5 in seventeen of twenty -- 85%, just
+    under the 90% threshold -- so it passed as measured, and the report
+    published "away pressing intensity was directionally measurable at 3.5".
+
+    The tell is not the share. It is that BOTH fields return the same
+    number. One of them provably is not measuring; a sibling that keeps
+    answering with that same value is reading the same default, and its
+    three excursions are the exception rather than the signal.
+
+    This does not fire on line height, which is the check that it
+    discriminates rather than simply flagging everything: home_height_pct is
+    stuck at 45.0 while away_height_pct's modal value is 40.0. Different
+    numbers, so the away line is moving on its own and survives.
+    """
+    stuck = {}
+    for key, rec in fields.items():
+        if rec.get("verdict") in (NOT_MEASURED, NEAR_CONSTANT):
+            value = _modal(rec)
+            if value is not None:
+                stuck.setdefault(key.partition(".")[0], {})[key] = value
+
+    flagged = []
+    for key, rec in fields.items():
+        if rec.get("verdict") != MEASURED:
+            continue
+        siblings = stuck.get(key.partition(".")[0], {})
+        if not siblings:
+            continue
+        value = _modal(rec)
+        if value is None or rec.get("dominant_share", 0) < ANCHOR_SHARE:
+            continue
+        for other_key, other_value in siblings.items():
+            if other_key != key and other_value == value:
+                rec["verdict"] = ANCHORED
+                rec["anchored_on"] = other_key
+                rec["reason"] = (
+                    "modal value %s is the value %s is stuck on; the same "
+                    "default, not an independent reading"
+                    % (value, other_key))
+                flagged.append(key)
+                break
+    return flagged
 
 
 def unclassified_fields(list_name: str, keys) -> list:
@@ -359,6 +430,10 @@ def compute(match_dir: str, running_summary: dict = None,
         rec["family"] = family
         fields[f"{list_name}.{field}"] = rec
 
+    # A field can pass the dominance test and still be returning a default,
+    # if the default is one a sibling field is provably stuck on.
+    anchored = mark_shared_defaults(fields)
+
     # Possession is not judged by distinct-value counting -- focus_seqs moves
     # across windows and would pass. It is judged by whether the team label it
     # is built from carries information at all.
@@ -383,6 +458,7 @@ def compute(match_dir: str, running_summary: dict = None,
         "dominant_share":  dominant_share,
         "fields":          fields,
         "team_attribution": attribution,
+        "anchored": sorted(anchored),
         "not_measured":  sorted(k for k, v in fields.items()
                                 if v["verdict"] in UNMEASURED),
         "no_data":       sorted(k for k, v in fields.items()
@@ -457,8 +533,8 @@ def format_report(report: dict) -> str:
              ""]
     for name, rec in sorted(report["fields"].items()):
         mark = {NOT_MEASURED: "STUCK", NEAR_CONSTANT: "STUCK",
-                CONSTRUCTED: "BUILT", MEASURED: "ok   ",
-                NO_DATA: "none "}.get(rec["verdict"], "?????")
+                CONSTRUCTED: "BUILT", ANCHORED: "ANCHR",
+                MEASURED: "ok   ", NO_DATA: "none "}.get(rec["verdict"], "?????")
         vals = ", ".join(f"{k}x{v}" for k, v in rec["values"].items()) or "-"
         lines.append(f"  [{mark}] {name:42} {rec['distinct']:>2} distinct / "
                      f"{rec['windows_with_value']:>2} windows  "

@@ -47,3 +47,13 @@ ground_truth_*.json
 validation/outputs/*
 !validation/outputs/.gitkeep
 !validation/groundtruth/.gitkeep
+
+# Model weights — ultralytics re-downloads these on demand (6.7MB each)
+*.pt
+
+# Scratch created when the device bridge could not unlink files
+_to_delete/
+
+# Local-CV working output, regenerable from the match directory
+label_set/
+team_debug/

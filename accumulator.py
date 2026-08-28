@@ -494,25 +494,41 @@ def update_running_summary(merged_path: str,
                 "match_state": str(ms),
             })
 
-    # Pressing -- extract trigger codes from scores array into observations
+    # Pressing. The structural schema emits home_intensity / away_intensity
+    # and home_trigger / away_trigger. This block previously read avg_score,
+    # peak_score and a scores[] array -- none of which the schema has ever
+    # produced -- so pressing_by_window was null on every window of every
+    # match, and the report described that null as a property of Veo footage
+    # rather than a field-name mismatch.
+    #
+    # Reading the real keys does not make the number trustworthy: intensity
+    # came back 3.5 on twenty windows of twenty, including eighteen runs
+    # against identical frames. It makes the null EARNED -- field_variance
+    # monitors this field, sees the constant, and marks it not_measured, so
+    # the suppression is a finding rather than an accident. A source that
+    # emits a real intensity will now flow through.
     pressing_data = w.get("pressing", {}) if isinstance(w.get("pressing"), dict) else {}
     trigger_observations = []
-    for score_entry in pressing_data.get("scores", []):
-        trigger = score_entry.get("trigger")
+    for side in ("home", "away"):
+        trigger = pressing_data.get(f"{side}_trigger")
         if trigger and str(trigger).lower() not in ("null", "none", ""):
-            trigger_code = _normalise_trigger(str(trigger))
             trigger_observations.append({
-                "trigger":   trigger_code,
-                "timestamp": score_entry.get("frame_group", ""),
-                "score":     score_entry.get("score", 0),
+                "trigger":   _normalise_trigger(str(trigger)),
+                "timestamp": w.get("timestamp_range", ""),
+                "side":      side,
             })
+    intensities = [pressing_data.get(f"{s}_intensity") for s in ("home", "away")]
+    intensities = [i for i in intensities if isinstance(i, (int, float))]
     summary["pressing_by_window"].append({
-        "window":    w.get("window"),
-        "agent_id":  w.get("agent_id"),
-        "avg_score": pressing_data.get("avg_score"),
-        "peak":      pressing_data.get("peak_score"),
-        "peak_ts":   pressing_data.get("peak_timestamp"),
-        "observations": trigger_observations,
+        "window":         w.get("window"),
+        "agent_id":       w.get("agent_id"),
+        "avg_score":      round(sum(intensities) / len(intensities), 2)
+                          if intensities else None,
+        "home_intensity": pressing_data.get("home_intensity"),
+        "away_intensity": pressing_data.get("away_intensity"),
+        "peak":           max(intensities) if intensities else None,
+        "peak_ts":        None,
+        "observations":   trigger_observations,
     })
 
     # Defensive line -- store both pct and metres
@@ -719,6 +735,13 @@ def update_running_summary(merged_path: str,
                      if _normalise_team_ref(s.get("team", ""), _cfg) == "home")
     _away_seqs = sum(1 for s in _win_seqs
                      if _normalise_team_ref(s.get("team", ""), _cfg) == "away")
+    # Sequences the agent could not attribute to a kit. They are excluded
+    # from the possession split, so without this count the split has a
+    # denominator nobody can state: ten-versus-ten reads as an even game
+    # whether the other forty sequences were unattributable or absent.
+    _unclear_seqs = sum(1 for s in _win_seqs
+                        if _normalise_team_ref(s.get("team", ""), _cfg)
+                        not in ("home", "away"))
     _total_both = _home_seqs + _away_seqs
     _focus_pct  = round(_home_seqs / max(_total_both, 1) * 100, 1) if _total_both > 0 else None
     summary["possession_by_window"].append({
@@ -729,6 +752,7 @@ def update_running_summary(merged_path: str,
         "focus_pct":  _focus_pct,
         "focus_seqs": _home_seqs,
         "opp_seqs":   _away_seqs,
+        "unclear_seqs": _unclear_seqs,
         "basis":      "sequence_count" if _total_both > 0 else "estimated",
     })
 

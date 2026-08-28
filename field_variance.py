@@ -74,6 +74,13 @@ MONITORED = [
     ("formation_history",      "away_shape",      "shape"),
     ("line_height_m_by_window", "home_height_pct", "territory"),
     ("line_height_m_by_window", "away_height_pct", "territory"),
+    # Per side, not the average. home_intensity is 3.5 on twenty windows of
+    # twenty while away_intensity moves -- averaging them produces 0.85
+    # dominance, which slips under the near-constant threshold and publishes a
+    # stuck field. Line height failed the same way: home constant, away real.
+    # Monitor what the agent emitted, not a figure derived from it.
+    ("pressing_by_window",     "home_intensity",  "pressing"),
+    ("pressing_by_window",     "away_intensity",  "pressing"),
     ("pressing_by_window",     "avg_score",       "pressing"),
     ("possession_by_window",   "focus_pct",       "territory"),
 ]
@@ -107,13 +114,117 @@ DERIVED_FROM = {
                                "formation_history.away_formation"],
 }
 
+# Per-ENTRY fields computed from other per-entry fields. Redacting a source
+# leaves any average of it standing, still carrying the constant: pressing
+# avg_score is the mean of a home intensity fixed at 3.5 and an away intensity
+# that moves, and scores 85% dominance -- under the near-constant threshold, so
+# it publishes. line_height avg_pct is the same shape and was monitored by
+# nothing at all. The mean of a measurement and a non-measurement is not a
+# measurement.
+DERIVED_FIELDS = {
+    "pressing_by_window.avg_score": [
+        "pressing_by_window.home_intensity",
+        "pressing_by_window.away_intensity"],
+    # peak is max(home_intensity, away_intensity). It was missed when this
+    # table was written by hand, so on the Gorleston match the redacted
+    # record read {"avg_score": "not_measured", "peak": 3.5} -- the
+    # mechanism built to suppress a stuck value publishing it one key to the
+    # right. INDEPENDENT below plus test_registry_is_complete now fail the
+    # suite when a field reaches one of these lists unclassified, so the
+    # next one cannot be missed the same way.
+    "pressing_by_window.peak": [
+        "pressing_by_window.home_intensity",
+        "pressing_by_window.away_intensity"],
+    "line_height_m_by_window.avg_pct": [
+        "line_height_m_by_window.home_height_pct",
+        "line_height_m_by_window.away_height_pct"],
+    "line_height_m_by_window.avg_m_approx": [
+        "line_height_m_by_window.home_height_pct",
+        "line_height_m_by_window.away_height_pct"],
+}
+
+# Fields that live in a monitored list and are deliberately neither monitored
+# nor derived. Each needs a reason, because "not listed" and "considered and
+# excluded" look identical otherwise -- which is how pressing peak survived
+# for as long as it did.
+#
+# This is not documentation. test_registry_is_complete reads the dict
+# literals that accumulator.py appends to each of these lists and fails if a
+# key appears in none of MONITORED, DERIVED_FIELDS or INDEPENDENT. Adding a
+# field to the accumulator therefore forces a decision here at the moment it
+# is added, rather than after a report has published it.
+INDEPENDENT = {
+    # Identity, not a reading.
+    "formation_history.window":              "window label",
+    "formation_history.window_id":           "window ordinal",
+    "formation_history.agent_id":            "which agent produced the record",
+    "line_height_m_by_window.window":        "window label",
+    "line_height_m_by_window.agent_id":      "which agent produced the record",
+    "possession_by_window.window":           "window label",
+    "pressing_by_window.window":             "window label",
+    "pressing_by_window.agent_id":           "which agent produced the record",
+    "pressing_by_window.peak_ts":            "timestamp of the peak, not a magnitude",
+
+    # Free text or nested lists. Distinct-value counting ranks the noisiest
+    # description as the best measured field, so prose is excluded by
+    # declaration -- see WHAT THIS DOES NOT TELL YOU in the module docstring.
+    "formation_history.shape":               "free text",
+    "formation_history.shape_oop":           "free text",
+    "line_height_m_by_window.shifts":        "list of shift descriptions",
+    "pressing_by_window.observations":       "list of press-trigger observations; "
+                                             "triggers vary (other/back_pass/"
+                                             "gk_in_possession) and carry the real "
+                                             "pressing signal",
+    "possession_by_window.basis":            "provenance label for focus_pct",
+
+    # Never populated by any agent on this source. Null everywhere is caught
+    # by the NO_DATA verdict if they are ever monitored; listing them here
+    # records that their absence is known rather than unnoticed.
+    "line_height_m_by_window.line_width_m_approx": "null on every window observed",
+    "line_height_m_by_window.space_behind_m":      "null on every window observed",
+
+    # Sequence counts. Their distinct-value spread is healthy (10, 11, 12, 5)
+    # so variance testing passes them, but the split between the two is an
+    # artefact of the team label -- see check_team_attribution, which is what
+    # actually judges these.
+    "possession_by_window.focus_seqs":       "judged by check_team_attribution",
+    "possession_by_window.opp_seqs":         "judged by check_team_attribution",
+    # Not a reading: it counts the sequences that carry no reading. It is the
+    # denominator disclosure for the two counts above, and a rising value is
+    # the honest signal that attribution is getting harder -- exactly the
+    # thing a variance test would misread as a field going stale.
+    "possession_by_window.unclear_seqs":     "count of unattributable sequences; "
+                                             "denominator disclosure, not a measurement",
+}
+
+# The lists this module claims to cover. Anything appended to one of these by
+# the accumulator is in scope for the registry check.
+MONITORED_LISTS = sorted({ln for ln, _, _ in MONITORED})
+
 NOT_MEASURED  = "not_measured"
 NEAR_CONSTANT = "near_constant"
 MEASURED      = "measured"
 NO_DATA       = "no_data"
+# A value the pipeline computed from its own construction rather than read
+# from the match. It is not a stuck sensor -- it varies -- but the variation
+# comes from how the data was assembled, so it carries no information about
+# what happened. See check_team_attribution.
+CONSTRUCTED   = "constructed"
 
 # Verdicts that mean "do not report this as an observed pattern".
-UNMEASURED = (NOT_MEASURED, NEAR_CONSTANT)
+UNMEASURED = (NOT_MEASURED, NEAR_CONSTANT, CONSTRUCTED)
+
+
+def unclassified_fields(list_name: str, keys) -> list:
+    """Keys in a monitored list that no declaration accounts for."""
+    monitored = {"%s.%s" % (ln, f) for ln, f, _ in MONITORED}
+    missing   = []
+    for k in keys:
+        full = "%s.%s" % (list_name, k)
+        if full in monitored or full in DERIVED_FIELDS or full in INDEPENDENT:
+            continue
+        missing.append(full)
+    return sorted(missing)
 
 
 def classify(values, min_windows: int = MIN_WINDOWS,
@@ -145,6 +256,85 @@ def classify(values, min_windows: int = MIN_WINDOWS,
     }
 
 
+# A window needs this many attributed sequences before its ordering means
+# anything; three sequences alternate by chance often enough to be useless.
+ALTERNATION_MIN_SEQS    = 6
+# ...and this many such windows before the match-level share means anything.
+ALTERNATION_MIN_WINDOWS = 5
+# Share of qualifying windows that must alternate strictly before the label is
+# called constructed. Real possession does not alternate: a team wins the ball
+# back and keeps it, so consecutive same-team sequences are the normal case.
+ALTERNATION_SHARE       = 0.9
+
+
+def check_team_attribution(match_dir: str = "", sequences: list = None) -> dict:
+    """Does the team label on a pass sequence carry information?
+
+    Variance testing cannot see this failure. The team field takes two
+    distinct values in every window, in healthy proportion, and passes. What
+    gives it away is the ORDER: on the Gorleston match the label ran
+    home, away, home, away without a single exception across 429 sequences
+    and 21 separately-run agents.
+
+    Possession does not behave that way. A side wins the ball and keeps it;
+    consecutive sequences by the same team are ordinary. Perfect alternation
+    across independent agents is not an observation, it is the schema line
+    "Log sequences for BOTH teams, not just the focus team" being satisfied
+    by a model that cannot tell at 1fps who has the ball -- so it takes turns.
+
+    Everything downstream of the label inherits the artefact: focus_seqs and
+    opp_seqs came out equal in twenty windows of twenty-one, and focus_pct
+    was therefore 50.0 by construction. A reader sees a balanced game.
+    """
+    if sequences is None:
+        path = os.path.join(match_dir, "pass_sequences.json")
+        if not os.path.exists(path):
+            return None
+        with open(path, encoding="utf-8") as f:
+            raw = json.load(f)
+        sequences = raw.get("sequences", raw) if isinstance(raw, dict) else raw
+    if not isinstance(sequences, list):
+        return None
+
+    by_window = {}
+    for s in sequences:
+        if isinstance(s, dict):
+            by_window.setdefault(s.get("window"), []).append(s.get("team"))
+
+    checked = alternating = 0
+    for teams in by_window.values():
+        teams = [t for t in teams if t is not None]
+        if len(teams) < ALTERNATION_MIN_SEQS:
+            continue
+        checked += 1
+        if all(teams[i] != teams[i + 1] for i in range(len(teams) - 1)):
+            alternating += 1
+
+    if checked < ALTERNATION_MIN_WINDOWS:
+        return {"verdict": NO_DATA, "windows_checked": checked,
+                "windows_alternating": alternating, "share": 0.0,
+                "sequences": len(sequences),
+                "reason": "too few windows carry %d+ attributed sequences to "
+                          "judge the ordering" % ALTERNATION_MIN_SEQS}
+
+    share   = alternating / checked
+    strict  = share >= ALTERNATION_SHARE
+    return {
+        "verdict":            CONSTRUCTED if strict else MEASURED,
+        "windows_checked":    checked,
+        "windows_alternating": alternating,
+        "share":              round(share, 3),
+        "sequences":          len(sequences),
+        "reason": ("team label alternates strictly in %d of %d windows (%.0f%%); "
+                   "the possession split follows from that alternation, not "
+                   "from the frames" % (alternating, checked, share * 100))
+                  if strict else
+                  ("team label alternates strictly in %d of %d windows (%.0f%%), "
+                   "below the %.0f%% artefact threshold"
+                   % (alternating, checked, share * 100, ALTERNATION_SHARE * 100)),
+    }
+
+
 def compute(match_dir: str, running_summary: dict = None,
             min_windows: int = MIN_WINDOWS,
             dominant_share: float = DOMINANT_SHARE,
@@ -169,11 +359,30 @@ def compute(match_dir: str, running_summary: dict = None,
         rec["family"] = family
         fields[f"{list_name}.{field}"] = rec
 
+    # Possession is not judged by distinct-value counting -- focus_seqs moves
+    # across windows and would pass. It is judged by whether the team label it
+    # is built from carries information at all.
+    attribution = check_team_attribution(match_dir) if match_dir else None
+    if attribution and attribution["verdict"] == CONSTRUCTED:
+        entries = running_summary.get("possession_by_window") or []
+        for f, family in (("focus_pct", "territory"),
+                          ("focus_seqs", "territory"),
+                          ("opp_seqs", "territory")):
+            key = "possession_by_window.%s" % f
+            rec = fields.get(key) or classify(
+                [e.get(f) for e in entries if isinstance(e, dict)],
+                min_windows, dominant_share)
+            rec["verdict"] = CONSTRUCTED
+            rec["family"]  = family
+            rec["reason"]  = attribution["reason"]
+            fields[key]    = rec
+
     report = {
         "match":         running_summary.get("match", ""),
         "min_windows":     min_windows,
         "dominant_share":  dominant_share,
         "fields":          fields,
+        "team_attribution": attribution,
         "not_measured":  sorted(k for k, v in fields.items()
                                 if v["verdict"] in UNMEASURED),
         "no_data":       sorted(k for k, v in fields.items()
@@ -215,6 +424,11 @@ def redact(running_summary: dict, report: dict) -> dict:
     if not flagged:
         return out
 
+    # A derived field falls with any of its sources.
+    for derived, sources in DERIVED_FIELDS.items():
+        if any(src in flagged for src in sources):
+            flagged.add(derived)
+
     by_list = {}
     for key in flagged:
         list_name, _, field = key.partition(".")
@@ -243,7 +457,8 @@ def format_report(report: dict) -> str:
              ""]
     for name, rec in sorted(report["fields"].items()):
         mark = {NOT_MEASURED: "STUCK", NEAR_CONSTANT: "STUCK",
-                MEASURED: "ok   ", NO_DATA: "none "}[rec["verdict"]]
+                CONSTRUCTED: "BUILT", MEASURED: "ok   ",
+                NO_DATA: "none "}.get(rec["verdict"], "?????")
         vals = ", ".join(f"{k}x{v}" for k, v in rec["values"].items()) or "-"
         lines.append(f"  [{mark}] {name:42} {rec['distinct']:>2} distinct / "
                      f"{rec['windows_with_value']:>2} windows  "

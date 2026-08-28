@@ -1733,12 +1733,11 @@ Output ONLY raw JSON. No preamble, no explanation, no markdown fences.
       "length": [number],
       "zone_start": "[defending_third / middle / attacking_third / left_channel / right_channel / left_halfspace / right_halfspace]",
       "zone_end": "[defending_third / middle / attacking_third / left_channel / right_channel / left_halfspace / right_halfspace]",
-      "team":             "[home_kit / away_kit -- REQUIRED. Log sequences for BOTH teams, not just the focus team]",
+      "team":             "[home_kit / away_kit / unclear -- which kit was in possession. Use 'unclear' whenever you cannot tell from the frames; it is the expected answer for many sequences at this frame rate and costs you nothing. Do NOT alternate or balance the two sides: real possession comes in runs, one team keeps the ball for several sequences, and a log that strictly alternates home/away is treated downstream as unattributed and the possession split is withheld. An honest log is lopsided and full of 'unclear']",
       "outcome": "[shot/cross/lost_possession/clearance/set_piece/end_of_window]",
       "progressive":        [true/false],
       "is_long_ball":        [true/false -- REQUIRED for clearances, long kicks, goal kicks going long, and any sequence where zone_start → zone_end skips a zone],
-      "second_ball_contest": "[won / lost / unclear / null -- REQUIRED when is_long_ball is true]",
-      "second_ball_contest": "[won / lost / unclear / null -- for long balls only, who won the loose ball]"
+      "second_ball_contest": "[won / lost / unclear / null -- who won the loose ball. REQUIRED when is_long_ball is true, null otherwise]"
     }
   ],
 

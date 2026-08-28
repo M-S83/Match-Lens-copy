@@ -154,3 +154,63 @@ def test_the_team_aerial_rate_reflects_both_sides():
 
     assert r["aerial_win_rate"] == 0.67, "2 of 3 decided, contested excluded"
     assert r["aerial_duels_total"] == 4
+
+
+# ── one implementation ───────────────────────────────────────────────────────
+
+def test_post_duel_outcomes_are_counted_on_the_win():
+    """Winning a header and conceding the second ball is a different event
+    from winning it and keeping the ball."""
+    r = build(_summary(
+        {**_duel("aerial", "home_kit", "#4 home_kit"),
+         "post_duel_outcome": "retained_possession"},
+        {**_duel("aerial", "home_kit", "#4 home_kit"),
+         "post_duel_outcome": "lost_to_second_ball"}))
+    rec = r["players"]["#4 home_kit"]
+
+    assert rec["won"] == 2 and rec["retained"] == 1 and rec["lost_to_second"] == 1
+
+
+def test_an_outcome_after_a_loss_is_not_credited():
+    r = build(_summary(
+        {**_duel("aerial", "away_kit", "#4 home_kit"),
+         "post_duel_outcome": "retained_possession"}))
+
+    assert r["players"]["#4 home_kit"]["retained"] == 0
+
+
+def test_deep_skill_metrics_delegates_rather_than_counting_again():
+    """It used to count duels itself, with `total` meaning times-visible and a
+    contested duel indistinguishable from a loss. Two implementations of one
+    count is how team-side resolution reached five."""
+    import inspect
+
+    import deep_skill_metrics as dsm
+
+    src = inspect.getsource(dsm._metric_duel_effectiveness)
+    assert "duel_record.build" in src
+    assert "players_visible" not in src, "counting its own again"
+    assert "win_rate" not in src and "retention_rate" not in src
+
+
+def test_the_metric_publishes_counts_and_no_rate():
+    import deep_skill_metrics as dsm
+
+    m = dsm._metric_duel_effectiveness(
+        _summary(_duel("aerial", "home_kit", "#4 home_kit", "#9 away_kit")),
+        "veo_ball_tracking")
+    rec = m["value"]["#4 home_kit"]
+
+    assert rec["observed"] == 1 and rec["won"] == 1
+    assert not [k for k in rec if "rate" in k]
+    assert "not knowable" in m["calculation_basis"]
+
+
+def test_the_metric_carries_the_reporting_rule_as_its_limitation_note():
+    """The caveat travels with the numbers, not only in the prompt."""
+    import deep_skill_metrics as dsm
+
+    m = dsm._metric_duel_effectiveness(
+        _summary(_duel("aerial", "home_kit", "#4 home_kit")), "veo_ball_tracking")
+
+    assert "VISIBLE" in (m["limitation_note"] or "")

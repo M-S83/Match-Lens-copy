@@ -122,3 +122,60 @@ def test_compute_writes_the_report_where_the_reader_looks(tmp_path):
 def test_compute_refuses_to_invent_a_summary(tmp_path):
     with pytest.raises(FileNotFoundError):
         compute(str(tmp_path))
+
+
+# ── derived per-entry fields fall with their sources ─────────────────────────
+#
+# Redacting a source leaves any average of it standing, still carrying the
+# constant. pressing avg_score is the mean of a home intensity fixed at 3.5
+# and an away intensity that moves: 85% dominance, under the near-constant
+# threshold, so it publishes. line_height avg_pct is the same shape and was
+# monitored by nothing at all.
+
+def _sides(home, away, n=21):
+    return {"pressing_by_window": [
+        {"home_intensity": home, "away_intensity": away[i % len(away)],
+         "avg_score": (home + away[i % len(away)]) / 2} for i in range(n)]}
+
+
+def test_an_average_of_a_stuck_field_is_redacted_too(tmp_path):
+    from field_variance import compute, redact
+
+    s = _sides(3.5, [3.0, 3.5, 4.0, 4.5])
+    out = redact(s, compute(str(tmp_path), s, write=False))
+    e = out["pressing_by_window"][0]
+
+    assert e["home_intensity"] == "not_measured"
+    assert e["away_intensity"] != "not_measured", "away moves and must survive"
+    assert e["avg_score"] == "not_measured", "the mean carries the constant"
+
+
+def test_an_average_survives_when_both_sources_move(tmp_path):
+    from field_variance import compute, redact
+
+    s = {"pressing_by_window": [
+        {"home_intensity": 2.0 + (i % 5) * 0.5,
+         "away_intensity": 3.0 + (i % 4) * 0.5,
+         "avg_score": 2.5 + (i % 3) * 0.5} for i in range(21)]}
+    out = redact(s, compute(str(tmp_path), s, write=False))
+
+    assert out["pressing_by_window"][0]["avg_score"] != "not_measured"
+
+
+def test_intensity_is_monitored_per_side_not_as_an_average():
+    """Averaging a constant home with a moving away gives 85% dominance, which
+    slips under the threshold. The fix is monitoring what the agent emitted,
+    not moving the threshold."""
+    from field_variance import MONITORED
+
+    fields = {f for src, f, _ in MONITORED if src == "pressing_by_window"}
+    assert {"home_intensity", "away_intensity"} <= fields
+
+
+def test_every_derived_field_names_sources_that_are_monitored():
+    """A derivation pointing at an unmonitored source can never fire."""
+    from field_variance import DERIVED_FIELDS, MONITORED
+
+    monitored = {f"{src}.{f}" for src, f, _ in MONITORED}
+    for derived, sources in DERIVED_FIELDS.items():
+        assert any(s in monitored for s in sources), derived

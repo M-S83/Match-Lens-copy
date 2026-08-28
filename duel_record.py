@@ -26,6 +26,14 @@ duels as losses, and labelling a mixed aerial/ground figure as aerial.
 
 Counts carry the same tactical meaning without the false precision. "Nine
 duels won, none lost" tells a coach what "82%" pretends to.
+
+THE ONLY IMPLEMENTATION
+-----------------------
+deep_skill_metrics._metric_duel_effectiveness delegates here. It previously
+counted the same thing independently, with `total` meaning times-visible,
+no distinction between a loss and a contested duel, and a retention rate
+divided by that same total. Two implementations of one count is how team-side
+resolution reached five.
 """
 from collections import defaultdict
 
@@ -47,7 +55,9 @@ def build(summary, live_play_minutes=None):
     """Per-player duel record, plus what fraction of the match it covers."""
     duels = summary.get("duels") or []
     rec = defaultdict(lambda: {"observed": 0, "won": 0, "lost": 0,
-                               "contested": 0, "aerial": 0, "ground": 0})
+                               "contested": 0, "aerial": 0, "ground": 0,
+                               "retained": 0, "lost_to_second": 0,
+                               "won_free_kick": 0})
     for d in duels:
         winner = d.get("winner")
         kind = d.get("type")
@@ -62,6 +72,16 @@ def build(summary, live_play_minutes=None):
                 r["contested"] += 1
             elif winner == side:
                 r["won"] += 1
+                # What happened AFTER the duel was won. Winning a header and
+                # conceding the second ball is a different event from winning
+                # it and keeping the ball, and a bare win count hides that.
+                outcome = d.get("post_duel_outcome")
+                if outcome == "retained_possession":
+                    r["retained"] += 1
+                elif outcome == "lost_to_second_ball":
+                    r["lost_to_second"] += 1
+                elif outcome == "free_kick_won":
+                    r["won_free_kick"] += 1
             else:
                 r["lost"] += 1
 

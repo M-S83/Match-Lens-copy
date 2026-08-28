@@ -190,19 +190,50 @@ PRESS_PROSE = {
 # ============================================================
 
 def calc_possession_balance(summary: dict) -> dict:
-    """Per-window possession balance from both-teams sequence counts."""
+    """Per-window possession balance from both-teams sequence counts.
+
+    focus_pct used to be read as ``(w.get("focus_pct") or 50)``. That is
+    fabrication wearing the clothes of a fallback: a window nobody could
+    measure was counted as a perfectly balanced one, it was divided into by
+    the full window count, and it voted in windows_focus_dominant. Two
+    windows -- one unreadable, one at 70% -- reported 60%.
+
+    It also crashed outright once field_variance began redacting focus_pct
+    to the string "not_measured", because a non-empty string is truthy and
+    went straight into sum().
+
+    Unmeasured windows are now excluded and counted. The denominator is the
+    windows that carried a reading, and windows_withheld says how many did
+    not, so the basis of the average is visible rather than assumed.
+    """
     pb = summary.get("possession_by_window", [])
     if not pb:
         return {}
-    total_windows = len(pb)
-    focus_avg = round(sum((w.get("focus_pct") or 50) for w in pb) / max(total_windows, 1), 1)
-    opp_avg   = round(100 - focus_avg, 1)
-    windows_dominant = sum(1 for w in pb if (w.get("focus_pct") or 50) >= 55)
+    values  = [w.get("focus_pct") for w in pb if isinstance(w, dict)]
+    numeric = [v for v in values
+               if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    withheld = len(values) - len(numeric)
+
+    if not numeric:
+        return {
+            "focus_avg_pct":      None,
+            "opposition_avg_pct": None,
+            "windows_focus_dominant": None,
+            "windows_total":      len(pb),
+            "windows_measured":   0,
+            "windows_withheld":   withheld,
+            "balance":            None,
+            "basis": "no window carried a numeric possession reading",
+        }
+
+    focus_avg = round(sum(numeric) / len(numeric), 1)
     return {
         "focus_avg_pct":      focus_avg,
-        "opposition_avg_pct": opp_avg,
-        "windows_focus_dominant": windows_dominant,
-        "windows_total":          total_windows,
+        "opposition_avg_pct": round(100 - focus_avg, 1),
+        "windows_focus_dominant": sum(1 for v in numeric if v >= 55),
+        "windows_total":      len(pb),
+        "windows_measured":   len(numeric),
+        "windows_withheld":   withheld,
         "balance": ("dominant" if focus_avg >= 55 else
                     "contested" if focus_avg >= 45 else "dominated"),
     }
@@ -2143,50 +2174,23 @@ def _metric_between_lines_receiving_rate(summary, source_type):
 
 
 def _metric_duel_effectiveness(summary, source_type):
-    """NEW v3 metric -- uses post_duel_outcome to distinguish 'wins duels'
-    from 'wins duels and retains'."""
+    """Per-player duel record. Counts only -- see duel_record for why.
+
+    This used to count duels itself: `total` meant times-VISIBLE, a contested
+    duel was indistinguishable from a loss, and retention was divided by that
+    same total. duel_record is now the only implementation; this shapes its
+    output into a metric envelope and adds nothing of its own.
+    """
+    import duel_record
+
     duels = summary.get("duels", [])
     if not duels:
         return _unavailable("duel_effectiveness",
                             "No duels logged with post_duel_outcome")
 
-    per_player = {}
-    for d in duels:
-        for player in d.get("players_visible", []):
-            rec = per_player.setdefault(player, {
-                "total":              0,
-                "won":                0,
-                "retained":           0,
-                "lost_to_second":     0,
-                "won_free_kick":      0,
-            })
-            rec["total"] += 1
-            winner = d.get("winner")
-            # Crude: assume player kit substring matches winner
-            if (winner == "home_kit" and "home_kit" in player) or \
-               (winner == "away_kit" and "away_kit" in player):
-                rec["won"] += 1
-                outcome = d.get("post_duel_outcome")
-                if outcome == "retained_possession":
-                    rec["retained"] += 1
-                elif outcome == "lost_to_second_ball":
-                    rec["lost_to_second"] += 1
-                elif outcome == "free_kick_won":
-                    rec["won_free_kick"] += 1
-
-    profiles = {}
-    for p, rec in per_player.items():
-        if rec["total"] == 0:
-            continue
-        win_rate = rec["won"] / rec["total"]
-        retention = rec["retained"] / rec["won"] if rec["won"] else 0
-        profiles[p] = {
-            **rec,
-            "win_rate":         round(win_rate, 2),
-            "retention_rate":   round(retention, 2),
-            "severely_limited": rec["total"] < 3,
-        }
-
+    record = duel_record.build(summary)
+    profiles = {p: {**rec, "severely_limited": rec["observed"] < 3}
+                for p, rec in record["players"].items() if rec["observed"]}
     if not profiles:
         return _unavailable("duel_effectiveness", "No usable duel data")
 
@@ -2203,13 +2207,16 @@ def _metric_duel_effectiveness(summary, source_type):
                                        False, len(profiles)),
         "result_family_status":    "allowed",
         "severely_limited":        False,
-        "limitation_note":         None,
+        "limitation_note":         record["reporting_rule"],
         "windows_contributing":    summary.get("windows_complete", 0),
         "fps_context":             "1fps duel logging; 5fps confirmation if escalated",
         "source_limitations":      None,
         "calculation_basis": (
-            "Per-player: won duels and post_duel_outcome distribution. "
-            "Retention rate = retained_possession outcomes / total wins."
+            "Counts only, from duel_record. observed = duels the player was "
+            "VISIBLE in, not duels contested; won/lost/contested are the "
+            "outcome; retained/lost_to_second/won_free_kick describe what "
+            "followed a win. No rate is published: the denominator is not "
+            "knowable and this source observes roughly half a match's duels."
         ),
         "traceable_to":            ["duels"],
     }

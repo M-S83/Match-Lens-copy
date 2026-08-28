@@ -27,6 +27,45 @@ from pipeline_paths import find_all_merged_windows
 from pipeline_schemas import stamp_schema_version
 
 
+def _set_pieces_family_allowed(match_dir: str) -> bool:
+    """True unless the source profile downgrades or suppresses set_pieces.
+
+    result_family_gates.json is written by source_profiler alongside
+    source_profile.json. Absent file means no profile ran, in which case the
+    old behaviour (always escalate) is preserved rather than silently
+    suppressing work.
+    """
+    path = os.path.join(match_dir, "result_family_gates.json")
+    if not os.path.exists(path):
+        return True
+    try:
+        with open(path, encoding="utf-8") as fh:
+            gates = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return True
+    # source_profiler writes the map under "gates". The first version of this
+    # function guessed at "result_family_rules"/"families", found neither,
+    # fell through to the top-level document, read set_pieces as None and
+    # returned True -- so the gate never fired and a full set of paid 5fps
+    # bursts ran anyway. Read every shape, and treat an unreadable map as
+    # "allowed" only because suppressing paid work on a parse failure would be
+    # worse than running it.
+    families = None
+    for key in ("gates", "result_family_rules", "families", "result_family_gates"):
+        cand = gates.get(key)
+        if isinstance(cand, dict):
+            families = cand
+            break
+    if families is None:
+        families = gates
+    state = families.get("set_pieces") if isinstance(families, dict) else None
+    if isinstance(state, dict):
+        state = state.get("state") or state.get("rule")
+    if state is None:
+        return True
+    return str(state).lower() not in ("downgraded", "suppressed", "blocked")
+
+
 STANDARD_CAP_HIGH   = 10
 MAX_MEDIUM_ALLOWED  = 4    # only if high count < 6
 
@@ -268,6 +307,7 @@ def build_escalation_queue(match_dir: str) -> dict:
 
     # Collect all queue items from merged window JSONs
     raw_items = []
+    _sp_source_skipped = 0
     # Find all merged windows, including legacy v1 merged_windows/ dir
     merged_paths = find_all_merged_windows(
         logs_dir,
@@ -326,6 +366,16 @@ def build_escalation_queue(match_dir: str) -> dict:
             for i in raw_items
             if i.get("event_type") == "set_piece_delivery"
         }
+        # Skip set-piece escalation entirely when the source profile downgrades
+        # the set_pieces family. On veo_ball_tracking every set-piece burst is
+        # paid 5fps work feeding a family the profile has already declared
+        # unreliable for this camera -- ten bursts a run, with 48 more skipped
+        # by the cap, to enrich results that are downgraded before they are
+        # written. Driven by the profile rather than removed outright, so a
+        # tactical-wide source still gets them.
+        if not _set_pieces_family_allowed(match_dir):
+            _sp_source_skipped += len(w.get("set_pieces") or [])
+            continue
         for sp in (w.get("set_pieces") or []):
             ts   = sp.get("timestamp")
             team = sp.get("team")
@@ -432,6 +482,9 @@ def build_escalation_queue(match_dir: str) -> dict:
     print(f"    Medium:          {len(med_allowed)}")
     print(f"    Skipped (cap):   {skipped_cap}")
     print(f"    Skipped (ineligible): {skipped_ineligible}")
+    if _sp_source_skipped:
+        print(f"    Skipped (set_pieces downgraded for this source): "
+              f"{_sp_source_skipped}")
     print(f"    Cap rule: {cap_note}")
 
     for item in all_items:

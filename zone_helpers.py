@@ -42,6 +42,63 @@ VALID_LATERAL_LANES = {
     "wide_left", "halfspace_left", "central", "halfspace_right", "wide_right",
 }
 
+# The vocabulary the agent PROMPTS teach and the vocabulary this module
+# validates against were written separately and never reconciled. On the first
+# run where zone normalisation actually executed, every one of 253 observations
+# was stamped _zone_invalid, between_lines was nulled on all of them, and all
+# 421 pass sequences resolved to vertical_progression "unknown".
+#
+# Measured on Gorleston v Tilbury:
+#   lateral_lane emitted    central_channel 224, right 14, left 15   -> 0 valid
+#   vertical_third emitted  defensive 69                             -> 69 invalid
+#   sequence start_zone     middle_third 201, defending_third 139,
+#                           attacking_third 52                       -> 0 valid
+#
+# Rejecting an agent's entire zone because it used the spelling its own prompt
+# asked for is the wrong direction of fix. Normalise what the agents actually
+# emit into the canonical set, and keep that set as the single vocabulary
+# everything downstream reads.
+LATERAL_LANE_ALIASES = {
+    "central_channel": "central",   "centre_channel": "central",
+    "centre":          "central",   "center":         "central",
+    "left_channel":    "wide_left", "right_channel":  "wide_right",
+    "left":            "wide_left", "right":          "wide_right",
+    "left_wide":       "wide_left", "right_wide":     "wide_right",
+    "left_halfspace":  "halfspace_left",
+    "right_halfspace": "halfspace_right",
+    "halfspace_l":     "halfspace_left",
+    "halfspace_r":     "halfspace_right",
+}
+
+VERTICAL_THIRD_ALIASES = {
+    "defensive":       "defending", "defensive_third": "defending",
+    "defending_third": "defending", "def_third":       "defending",
+    "back_third":      "defending",
+    "middle_third":    "middle",    "midfield_third":  "middle",
+    "mid":             "middle",    "mid_third":       "middle",
+    "attacking_third": "attacking", "final_third":     "attacking",
+    "att_third":       "attacking", "front_third":     "attacking",
+}
+
+
+def canonical_lateral_lane(value):
+    """Map any lateral-lane spelling in use to the canonical code, or None."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    v = LATERAL_LANE_ALIASES.get(v, v)
+    return v if v in VALID_LATERAL_LANES else None
+
+
+def canonical_vertical_third(value):
+    """Map any vertical-third spelling in use to the canonical code, or None."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    v = VERTICAL_THIRD_ALIASES.get(v, v)
+    return v if v in VALID_VERTICAL_THIRDS else None
+
+
 VALID_NAMED_ZONES = {
     "zone_14",
     "second_six_yard_box",
@@ -58,6 +115,10 @@ VALID_BETWEEN_LINES = {
     "between_def_mid",
     "between_mid_fwd",
     "between_fb_cb",
+    # Agents answer the prompt's untyped "between_lines (or null)" with a
+    # boolean. normalise_zone maps True to this code so the observation
+    # survives with its band recorded as unknown rather than being dropped.
+    "between_lines_unspecified",
 }
 
 # Vertical-third progression matrix.
@@ -92,11 +153,19 @@ def derive_vertical_progression(zone_start, zone_end):
         regression_attacking_to_defending
         unknown  -- if either third is missing or invalid
     """
-    if not isinstance(zone_start, dict) or not isinstance(zone_end, dict):
-        return "unknown"
+    # Accepts either a zone dict {"vertical_third": ...} or a plain zone
+    # string. pass_sequences carry start_zone/end_zone as STRINGS
+    # ("middle_third", "defending_third"), not dicts, so the dict-only version
+    # of this function returned "unknown" for every sequence ever produced --
+    # 421 of 421 on Gorleston v Tilbury. Both shapes normalise through
+    # canonical_vertical_third.
+    def _third(z):
+        if isinstance(z, dict):
+            return canonical_vertical_third(z.get("vertical_third"))
+        return canonical_vertical_third(z)
 
-    v_start = zone_start.get("vertical_third")
-    v_end = zone_end.get("vertical_third")
+    v_start = _third(zone_start)
+    v_end   = _third(zone_end)
 
     if v_start not in _THIRD_INDEX or v_end not in _THIRD_INDEX:
         return "unknown"
@@ -181,16 +250,36 @@ def normalise_zone(zone_obj):
     named = zone_obj.get("named_zone")
     between = zone_obj.get("between_lines")
 
+    # Normalise the spellings the agents actually emit before validating.
+    # Previously an unrecognised spelling invalidated the whole zone, which
+    # discarded every observation and every pass sequence in the run.
     invalid = False
-    if v is not None and v not in VALID_VERTICAL_THIRDS:
-        invalid = True
-    if lane is not None and lane not in VALID_LATERAL_LANES:
-        invalid = True
+    if v is not None:
+        canon_v = canonical_vertical_third(v)
+        if canon_v is None:
+            invalid = True
+        else:
+            v = canon_v
+    if lane is not None:
+        canon_lane = canonical_lateral_lane(lane)
+        if canon_lane is None:
+            invalid = True
+        else:
+            lane = canon_lane
     if named is not None and named not in VALID_NAMED_ZONES:
         # Agent supplied an unknown code -- drop it but don't invalidate
         named = None
     if between is not None and between not in VALID_BETWEEN_LINES:
-        between = None
+        # The prompt asks for "between_lines (or null)" without naming a
+        # vocabulary, so agents answer with a boolean. The validator wanted
+        # one of three band codes and nulled everything else -- which is why
+        # between_lines_events went from 27 to 0 the moment normalisation
+        # first ran. A bare True is a real observation with the band
+        # unspecified; keep it as that rather than discarding it.
+        if between is True:
+            between = "between_lines_unspecified"
+        else:
+            between = None
 
     # Auto-resolve named_zone if agent left it null
     if named is None and not invalid:
@@ -292,17 +381,21 @@ def walk_findings_apply_zone_helpers(match_dir):
         with open(path) as f:
             data = json.load(f)
 
-        # Pass sequences
+        # Pass sequences.
+        # The agents emit `start_zone`/`end_zone` (see the pass_sequences
+        # schema in build_structural_prompt); this walker only ever read
+        # `zone_start`/`zone_end`, so zs and ze were None for every sequence
+        # and vertical_progression resolved to "unknown" 421 times out of 421.
+        # Read both spellings, normalise, and write the canonical pair back
+        # alongside the original keys so nothing downstream loses its input.
         for seq in data.get("pass_sequences", []):
-            zs = seq.get("zone_start")
-            ze = seq.get("zone_end")
+            zs = seq.get("zone_start") or seq.get("start_zone")
+            ze = seq.get("zone_end")   or seq.get("end_zone")
             if zs:
-                seq["zone_start"] = normalise_zone(zs)
+                seq["zone_start"] = normalise_zone(zs) if isinstance(zs, dict) else zs
             if ze:
-                seq["zone_end"] = normalise_zone(ze)
-            seq["vertical_progression"] = derive_vertical_progression(
-                seq.get("zone_start"), seq.get("zone_end")
-            )
+                seq["zone_end"] = normalise_zone(ze) if isinstance(ze, dict) else ze
+            seq["vertical_progression"] = derive_vertical_progression(zs, ze)
 
         # Individual observations
         for obs in data.get("individual_observations", []):

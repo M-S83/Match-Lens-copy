@@ -6,7 +6,7 @@ at player-height positions, and builds a jersey_number_map.json
 mapping frame filenames to lists of detected numbers with positions.
 
 Usage:
-    python jersey_ocr.py <match_dir> [--confidence 0.82] [--sample-rate 30]
+    python jersey_ocr.py <match_dir> [--confidence 0.45] [--sample-rate 30]
 
 Output:
     <match_dir>/jersey_number_map.json
@@ -22,6 +22,7 @@ from pathlib import Path
 from collections import defaultdict
 from pipeline_schemas import stamp_schema_version
 from pipeline_paths import frame_sort_key
+from pipeline_accessors import resolve_team_side
 
 
 def _should_run_ocr(source_profile_path: str) -> bool:
@@ -47,11 +48,19 @@ def _is_jersey_number(text: str) -> bool:
     return 1 <= n <= 99
 
 
+PLAYER_BAND_TOP    = 0.12   # above this is sky, rooftops, stands, scoreboard
+PLAYER_BAND_BOTTOM = 0.92   # below this is the near touchline and surrounds
+
+
 def _is_player_height(bbox, frame_height: int) -> bool:
     """
     Return True if bounding box is in the player zone of the frame.
     Excludes scoreboard overlays (top 12%) and pitch surrounds (bottom 8%).
     bbox format from PaddleOCR: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
+
+    Retained for callers that hold a full-frame bbox. run_ocr no longer needs
+    it: it crops to the same band before inference, so every result is inside
+    the band by construction.
     """
     ys = [pt[1] for pt in bbox]
     centre_y = sum(ys) / len(ys)
@@ -60,7 +69,7 @@ def _is_player_height(bbox, frame_height: int) -> bool:
 
 
 def run_ocr(match_dir: str,
-            confidence_threshold: float = 0.82,
+            confidence_threshold: float = 0.45,
             sample_rate: int = 30) -> tuple:
     """
     Run EasyOCR on sampled frames and return (number_map, frames_scanned).
@@ -100,9 +109,20 @@ def run_ocr(match_dir: str,
         try:
             img = Image.open(frame_path)
             frame_h = img.height
+            # Crop to the player band BEFORE inference rather than filtering
+            # afterwards. _is_player_height discarded the top 12% and bottom
+            # 8% of every result, so OCR was being run over sky, rooftops,
+            # stands and the running track on every frame -- roughly a fifth
+            # of the pixels, and the noisiest fifth for a digit detector.
+            # Cropping first cuts the work and removes a class of false
+            # positive (stand signage, pitch-side advertising) outright.
+            top = int(frame_h * PLAYER_BAND_TOP)
+            bot = int(frame_h * PLAYER_BAND_BOTTOM)
+            band = img.crop((0, top, img.width, bot))
+            import numpy as _np
             # EasyOCR returns list of (bbox, text, confidence)
             # bbox format: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
-            result = reader.readtext(str(frame_path), detail=1)
+            result = reader.readtext(_np.array(band), detail=1)
         except Exception:
             continue
 
@@ -111,13 +131,13 @@ def run_ocr(match_dir: str,
 
         frame_hits = []
         for (bbox, text, conf) in result:
-            if (conf >= confidence_threshold
-                    and _is_jersey_number(text)
-                    and _is_player_height(bbox, frame_h)):
+            if conf >= confidence_threshold and _is_jersey_number(text):
+                # Shift y back into full-frame coordinates so bboxes stay
+                # comparable with anything else that reads this file.
                 frame_hits.append({
                     "number":     int(text.strip()),
                     "confidence": round(conf, 3),
-                    "bbox":       [[int(x), int(y)] for x, y in bbox]
+                    "bbox":       [[int(x), int(y) + top] for x, y in bbox]
                 })
                 hits += 1
 
@@ -142,7 +162,10 @@ def resolve_to_players(number_map: dict, mc: dict) -> dict:
     # Build (side, number) → name lookup
     lookup = {}
     for lineup in mc.get('lineups', []):
-        side = lineup.get('team_side', '')
+        # Was `lineup.get('team_side', '')`; nothing writes that key, so every
+        # OCR result carried team_side='' and a recognised shirt number could
+        # not be bound to a team.
+        side = resolve_team_side(lineup, mc)
         for p in lineup.get('startXI', []) + lineup.get('substitutes', []):
             player = p.get('player', p)
             name   = player.get('name', '') if isinstance(player, dict) else ''
@@ -201,7 +224,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Jersey number OCR for Match Lens")
     parser.add_argument('match_dir')
-    parser.add_argument('--confidence', type=float, default=0.82)
+    # 0.82 was far too strict for 40-200px shirt numbers at an angle, in motion,
+    # on a wide frame. The first run that completed scanned 247 frames and
+    # returned FIVE sightings across four players -- a 2% yield, effectively
+    # nothing. A low threshold is safe here because resolve_to_players() is the
+    # real filter: any number that is not on one of the two team sheets is
+    # discarded, so a false "37" costs nothing when no one wears 37.
+    parser.add_argument('--confidence', type=float, default=0.45)
     parser.add_argument('--sample-rate', type=int, default=30)
     args = parser.parse_args()
 

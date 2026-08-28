@@ -33,6 +33,8 @@ import re
 import statistics
 from collections import Counter, defaultdict
 
+from pipeline_accessors import resolve_side_from_team_name
+
 
 # ============================================================================
 # Constants
@@ -150,14 +152,20 @@ def player_matches(obs_player_string, target_shirt, target_name=None):
 # ============================================================================
 
 def _resolve_team_side(team_name, match_config):
-    """Returns 'home' or 'away' for a team name from API lineup."""
+    """Returns 'home' or 'away' for a team name, or None when unresolvable.
+
+    Thin wrapper over pipeline_accessors.resolve_side_from_team_name. This was
+    the ONLY correct implementation of this logic in the codebase while four
+    other sites read the non-existent `team_side` key directly; the logic has
+    moved to the accessor so there is one implementation rather than five.
+    Callers here tolerate None, so the accessor's ValueError is absorbed.
+    """
     if not team_name:
         return None
-    if team_name == match_config.get("home_team"):
-        return "home"
-    if team_name == match_config.get("away_team"):
-        return "away"
-    return None
+    try:
+        return resolve_side_from_team_name(team_name, match_config)
+    except ValueError:
+        return None
 
 
 def extract_roster(match_config):

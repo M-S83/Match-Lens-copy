@@ -13,7 +13,8 @@ Usage:
 import json
 import os
 import sys
-from pipeline_accessors import get_source_limitations_note
+from pipeline_accessors import (get_source_limitations_note,
+                                resolve_side_from_team_name)
 from pipeline_schemas import stamp_schema_version
 
 
@@ -83,22 +84,35 @@ def build_readiness_check(match_dir: str) -> bool:
     gt_passed = bool(ground_truth and isinstance(gt_missed, int) and gt_missed == 0)
 
     if not gt_passed:
-        # For broadcast: pass-through whenever the deep scan actually ran
-        # (events_checked > 0). 10/10 missed is design behaviour; 0 events
-        # checked is a genuine pipeline failure (file missing, deep scan
-        # never ran) and falls into the strict "block" branch via gt_total
-        # being falsy. 0.95 would have allowed up to 95% missed but still
-        # blocked at 100% -- the actual signal of failure is gt_total == 0.
-        if (source_type_early == "broadcast_fixed_wide"
-                and isinstance(gt_missed, int) and gt_total > 0):
+        # Goals, cards and substitutions come from match_config, which is
+        # operator-entered from the official fixture record. They are known
+        # facts, not claims requiring visual proof. Whether the footage also
+        # happened to show them is a measure of the FOOTAGE, not of the
+        # analysis -- and on a ball-following camera at 1fps the answer is
+        # usually "no", by design rather than by failure.
+        #
+        # Blocking reports on it was the wrong shape twice over: it withheld
+        # analysis the operator facts already underwrite, and it spent event-
+        # agent money re-deriving a timeline that was never in doubt. It is
+        # now recorded as a corroboration rate, which is genuinely useful --
+        # it tells you how much of the discrete-event layer the camera can
+        # see -- and it never blocks.
+        #
+        # The genuine pipeline failure remains blocking: events_checked == 0
+        # means the check never ran or its file is missing, which is a
+        # different thing from the footage not showing an event.
+        if isinstance(gt_missed, int) and gt_total > 0:
+            _seen = gt_total - gt_missed
             warnings.append(
-                f"Ground truth: {gt_missed}/{gt_total} event(s) missed "
-                f"-- expected for broadcast_fixed_wide at 1fps "
-                f"(event agent only runs on goal windows)"
+                f"Ground truth: footage independently corroborated "
+                f"{_seen}/{gt_total} known event(s). Operator facts remain "
+                f"authoritative; this is a measure of what the camera saw, "
+                f"not of analysis quality."
             )
         else:
             blocking.append(
-                f"Ground truth: {gt_missed} event(s) missed -- re-run deep scan"
+                f"Ground truth check did not run (events_checked={gt_total}) "
+                f"-- the file is missing or the step failed."
             )
 
     # -- Data gaps (warning, not blocking) ------------------------------------
@@ -280,7 +294,13 @@ def validate_shirt_numbers(match_dir: str) -> dict:
         for player in lineup.get("startXI", []) + lineup.get("substitutes", []):
             num = player.get("player", {}).get("number")
             if num:
-                if team_name == mc.get("home_team"):
+                # Inline name comparison replaced by the canonical accessor, so
+                # there is one implementation of "which side is this team".
+                try:
+                    _side = resolve_side_from_team_name(team_name, mc)
+                except ValueError:
+                    _side = "away"
+                if _side == "home":
                     home_shirts.add(str(num))
                 else:
                     away_shirts.add(str(num))

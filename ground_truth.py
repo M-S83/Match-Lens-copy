@@ -20,7 +20,8 @@ import os
 import sys
 from datetime import datetime
 from pipeline_accessors import (get_window_start_seconds, get_window_end_seconds,
-                                 get_moment_time)
+                                 get_moment_time, get_kickoff_seconds,
+                                 match_minute_to_video_s)
 from pipeline_schemas import stamp_schema_version
 
 
@@ -88,18 +89,40 @@ def seconds_match(ts_a: str, ts_b: str,
     return abs(a - b) <= tolerance
 
 
-def find_event_in_moments(event: dict, key_moments: list) -> dict | None:
+def find_event_in_moments(event: dict, key_moments: list,
+                          ko: dict | None = None) -> dict | None:
     """
     Search key_moments for a match to a known event.
     Match criteria:
-      1. Timestamp within TIMESTAMP_TOLERANCE_SECONDS
+      1. Timestamp within TIMESTAMP_TOLERANCE_SECONDS, compared in VIDEO seconds
       2. Type match (goal/sub/card) if both specified
     Returns the matching moment dict or None.
+
+    ``ko`` is the kickoff dict from pipeline_accessors.get_kickoff_seconds.
+    It is required to compare like with like: the known event's timestamp is
+    already in VIDEO seconds (converted from match_config's match minute),
+    while key_moments carry the agent's MATCH clock. Comparing the two
+    directly is off by the pre-match footage in the first half and by
+    pre-match + the half-time break in the second -- 350s and 1569s on
+    Gorleston v Tilbury, against a 90s tolerance. Every known event therefore
+    scored as missed even when the agent had detected it at exactly the right
+    match minute. Passing ko=None preserves the old raw comparison and is only
+    for callers that already hold both sides in the same coordinate system.
     """
     event_ts   = event.get("timestamp") or f"{event.get('minute',0)*60}"
     event_type = event.get("type", "").lower()
+    event_s    = parse_timestamp_to_seconds(event_ts)
 
     for moment in key_moments:
+        # Operator-injected moments are NOT evidence. accumulator.py:1665
+        # writes goals from match_config straight into key_moments with
+        # source="operator" and detected_in_footage recording whether the
+        # footage independently showed it. Matching a known event against one
+        # of those is circular -- it validates match_config against itself and
+        # reports the footage as corroborating something it never saw. Only an
+        # agent-detected moment can confirm a known event.
+        if moment.get("source") == "operator" and not moment.get("detected_in_footage"):
+            continue
         # A4: was moment.get("timestamp", "") -- the legacy key only. Current
         # agents emit "minute" (Fix 32a schema), so this read "" for every
         # moment and seconds_match() was always False, scoring every known
@@ -107,7 +130,16 @@ def find_event_in_moments(event: dict, key_moments: list) -> dict | None:
         moment_ts   = get_moment_time(moment)
         moment_type = moment.get("type", "").lower()
 
-        ts_ok   = seconds_match(event_ts, moment_ts)
+        if ko:
+            moment_match_s = parse_timestamp_to_seconds(moment_ts)
+            if moment_match_s is None or event_s is None:
+                ts_ok = False
+            else:
+                moment_video_s = match_minute_to_video_s(
+                    moment_match_s / 60.0, ko)
+                ts_ok = abs(event_s - moment_video_s) <= TIMESTAMP_TOLERANCE_SECONDS
+        else:
+            ts_ok = seconds_match(event_ts, moment_ts)
         # Normalise type aliases: "card" matches disciplinary/yellow_card/red_card;
         # "sub" matches substitution
         _TYPE_ALIASES = {"card": {"disciplinary", "yellow_card", "red_card", "yellow", "red"},
@@ -165,32 +197,22 @@ def build_ground_truth_check(match_dir: str) -> dict:
             windows = plan.get("windows", [])
 
     # -- Load match boundaries for minute-to-video-time conversion ---------------
-    ko_1h_s         = 0
-    ko_2h_s         = 0
-    first_half_live = 45 * 60  # default: 45 minutes
-    ht_s            = first_half_live   # safe default; overwritten if boundaries present
+    ko              = {}
     boundaries_path = os.path.join(match_dir, "match_boundaries.json")
     if os.path.exists(boundaries_path):
         with open(boundaries_path, encoding="utf-8") as f:
-            b = json.load(f)
-        ko_1h_s         = b["boundaries"]["ko_1h"]["seconds"]
-        ko_2h_s         = b["boundaries"]["ko_2h"]["seconds"]
-        ht_s            = b["boundaries"]["ht_whistle"]["seconds"]
-        first_half_live = ht_s - ko_1h_s
+            ko = get_kickoff_seconds(json.load(f))
 
     def _minute_to_video_s(minute):
-        """Convert match minute (scoreboard time) to video seconds.
-        Match minutes are always 0-45 for 1H and 45+ for 2H regardless of
-        stoppage time, so we cannot use first_half_live as the split point.
-        Instead: try the 1H formula; if that would land past the HT whistle,
-        it must be a 2H event.
+        """Convert a match minute to video seconds via the canonical accessor.
+
+        The local four-line implementation this replaces was one of four
+        copies of the same conversion in the codebase; they diverged, and the
+        divergence is what produced this module's 100% miss rate.
         """
-        if minute is None:
+        if minute is None or not ko.get("ko_1h"):
             return None
-        vs_1h = ko_1h_s + minute * 60
-        if vs_1h <= ht_s:
-            return vs_1h
-        return ko_2h_s + (minute - 45) * 60
+        return match_minute_to_video_s(minute, ko)
 
     key_moments  = summary.get("key_moments", [])
     known_events = []
@@ -253,7 +275,7 @@ def build_ground_truth_check(match_dir: str) -> dict:
     rerun_needed = []
 
     for event in known_events:
-        found_moment = find_event_in_moments(event, key_moments)
+        found_moment = find_event_in_moments(event, key_moments, ko)
         event_secs   = parse_timestamp_to_seconds(event["timestamp"])
         win_id       = event_window_id(event_secs, windows) if event_secs else None
 

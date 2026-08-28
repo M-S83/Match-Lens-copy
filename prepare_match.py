@@ -130,6 +130,35 @@ def main() -> int:
         print("\n  [FAIL] Step 1c failed.", file=sys.stderr)
         return 1
 
+    # ── 1f  source profile ───────────────────────────────────────────────────
+    # Blocking, not advisory. source_profile.json sets the result-family gates
+    # and the confidence cap for the whole run. Without it: 3e_zone_normalise
+    # skips, 3k2_player_cards fails outright, deep metrics cap at source
+    # "unknown", and the readiness check cannot apply its source-aware
+    # relaxation. Every one of those happened on the first real run because
+    # this step was simply not part of the head, and the pipeline proceeded
+    # to spend money anyway.
+    rule("1f", "Source profile (classification, cheap)")
+    if done("source_profile.json"):
+        print("  [SKIP] source_profile.json exists.")
+    else:
+        print("  [FAIL] source_profile.json is missing.\n", file=sys.stderr)
+        print("  Step 1f classifies the footage source and sets the result-family",
+              file=sys.stderr)
+        print("  gates for the entire run. Running without it silently degrades",
+              file=sys.stderr)
+        print("  metrics, skips zone normalisation and fails player cards.\n",
+              file=sys.stderr)
+        print(f"    {py} source_profiler.py \"{match_dir}\" \"{video}\"",
+              file=sys.stderr)
+        print("\n  That prints a classification prompt plus sample frames. Run it,",
+              file=sys.stderr)
+        print("  then apply the result:\n", file=sys.stderr)
+        print(f"    {py} -c \"import json,source_profiler; "
+              f"source_profiler.build_source_profile(r'{match_dir}', "
+              f"json.load(open(r'<classification>.json')))\"\n", file=sys.stderr)
+        return 1
+
     # ── Report what was actually produced ────────────────────────────────────
     wp_path = os.path.join(match_dir, "window_plan.json")
     try:

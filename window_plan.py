@@ -17,10 +17,22 @@ import json
 import os
 import sys
 from datetime import datetime
-from pipeline_accessors import get_match_id
+from pipeline_accessors import (get_match_id, match_minute_to_video_s,
+                                get_kickoff_seconds)
 from pipeline_schemas import stamp_schema_version
 
-WINDOW_SECONDS = 300    # 5-minute windows
+WINDOW_SECONDS = 300    # 5-minute windows (default; override per match)
+
+# Window length is the only lever on temporal resolution that money cannot buy.
+# Anthropic caps a request at 100 images, so a 5-minute window can never be
+# sampled finer than one frame per 3.3s however many frames you pay for. Halving
+# the window halves that floor. Set "window_seconds" in match_config.json to
+# override; the default stays 300 so existing matches replan identically.
+def _window_seconds(config: dict) -> int:
+    v = (config or {}).get("window_seconds")
+    if isinstance(v, (int, float)) and 30 <= v <= 900:
+        return int(v)
+    return WINDOW_SECONDS
 SNAP_THRESHOLD = 15     # snap window edge to container boundary if within 15s
 
 
@@ -50,10 +62,15 @@ def goal_minute_to_video_seconds(elapsed_min: float, ko_1h_s: float,
     break, so the two halves need different offsets. Without this the only
     footage the mapping is correct for is a video that starts exactly at
     kickoff and contains no half-time break.
+
+    Delegates to pipeline_accessors.match_minute_to_video_s so there is one
+    implementation of this conversion. There were four; the divergence between
+    them produced calc_match_state, the ground-truth check, the cost
+    estimator's event-window count and the event_window flag as four separate
+    defects with a single cause.
     """
-    if elapsed_min <= 45:
-        return ko_1h_s + elapsed_min * 60
-    return ko_2h_s + (elapsed_min - 45) * 60
+    return match_minute_to_video_s(
+        elapsed_min, {"ko_1h": ko_1h_s, "ko_2h": ko_2h_s})
 
 
 def calc_match_state(window_start_s: float, goals: list,
@@ -121,7 +138,7 @@ def calc_match_state(window_start_s: float, goals: list,
 # -- Window generation ---------------------------------------------------------
 
 def make_windows(start: float, end: float, half_label: str,
-                 boundaries: list = None) -> list:
+                 boundaries: list = None, window_seconds: int = None) -> list:
     """
     Generate analysis windows covering one half of live play.
     If container boundaries are provided, window edges snap to them
@@ -140,7 +157,7 @@ def make_windows(start: float, end: float, half_label: str,
     cursor  = start
 
     while cursor < end:
-        natural_end = min(cursor + WINDOW_SECONDS, end)
+        natural_end = min(cursor + (window_seconds or WINDOW_SECONDS), end)
 
         # Snap to nearby container segment boundary
         if boundaries:
@@ -151,7 +168,7 @@ def make_windows(start: float, end: float, half_label: str,
                         break
                     elif abs(b - cursor) <= SNAP_THRESHOLD:
                         cursor = b             # push start forward past boundary
-                        natural_end = min(cursor + WINDOW_SECONDS, end)
+                        natural_end = min(cursor + (window_seconds or WINDOW_SECONDS), end)
                         break
 
         boundary_nearby = bool(boundaries) and any(
@@ -177,6 +194,42 @@ def make_windows(start: float, end: float, half_label: str,
 
 
 # -- Mark event windows --------------------------------------------------------
+
+def derive_event_windows(plan: dict, config: dict,
+                         ko_1h_s: float, ko_2h_s: float) -> dict:
+    """Work out which windows contain a goal or a substitution.
+
+    Returns the {"goal": [agent_ids], "sub": [agent_ids]} shape that
+    mark_event_windows expects. Event times come from match_config in MATCH
+    minutes; window start_s/end_s are VIDEO seconds, so the conversion runs
+    through the canonical accessor. Comparing the two coordinate systems
+    directly is the defect family that also produced calc_match_state, the
+    ground-truth check and the cost estimator's event count.
+    """
+    ko = {"ko_1h": ko_1h_s, "ko_2h": ko_2h_s}
+    out = {"goal": [], "sub": []}
+    if not ko_1h_s and ko_1h_s != 0:
+        return out
+
+    def _minutes(items):
+        mins = []
+        for it in items or []:
+            m = (it.get("time") or {}).get("elapsed")
+            if isinstance(m, (int, float)) and not isinstance(m, bool):
+                mins.append(m)
+        return mins
+
+    for kind, items in (("goal", (config or {}).get("goals")),
+                        ("sub",  (config or {}).get("substitutions"))):
+        for m in _minutes(items):
+            vs = match_minute_to_video_s(m, ko)
+            for w in plan["windows"]:
+                if w["start_s"] <= vs <= w["end_s"]:
+                    if w["agent_id"] not in out[kind]:
+                        out[kind].append(w["agent_id"])
+                    break
+    return out
+
 
 def mark_event_windows(plan: dict, event_windows: dict) -> dict:
     """
@@ -304,8 +357,11 @@ def build_window_plan(match_dir: str,
               f"(proceeding without boundary alignment)")
 
     # -- Generate windows ------------------------------------------------------
-    first_half  = make_windows(ko_1h, ht,  "1H", container_boundaries)
-    second_half = make_windows(ko_2h, ft,  "2H", container_boundaries)
+    _win_s      = _window_seconds(config)
+    if _win_s != WINDOW_SECONDS:
+        print(f"  Window length: {_win_s}s (match_config override; default {WINDOW_SECONDS}s)")
+    first_half  = make_windows(ko_1h, ht,  "1H", container_boundaries, _win_s)
+    second_half = make_windows(ko_2h, ft,  "2H", container_boundaries, _win_s)
     all_windows = first_half + second_half
 
     # Number sequentially, add labels, and tag match state
@@ -338,6 +394,16 @@ def build_window_plan(match_dir: str,
         "windows":                      all_windows,
         "generated_at":                 datetime.now().isoformat(),
     }
+
+    if event_windows is None:
+        # Derive event windows from match_config rather than leaving the flag
+        # False on every window. Nothing ever called mark_event_windows(), so
+        # `event_window` was False across the whole plan, and
+        # pipeline_runner_v2._window_has_event reads that flag FIRST and
+        # short-circuits -- meaning Phase 3 (the 5fps event agent) has never
+        # run on any match. That is why shots_log records goals as "match
+        # facts only" with zero event-agent confirmation.
+        event_windows = derive_event_windows(plan, config, ko_1h, ko_2h)
 
     if event_windows:
         plan = mark_event_windows(plan, event_windows)

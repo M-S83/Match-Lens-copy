@@ -180,3 +180,209 @@ def get_match_id(match_dir: str, mc: dict | None = None) -> str:
     if mc and mc.get("match"):
         return mc["match"]
     return os.path.basename(match_dir)
+
+
+# ── Team side ────────────────────────────────────────────────────────────────
+#
+# Historically this was read as `lineup.get("team_side", "")` in four places.
+# NOTHING in the pipeline has ever written that key: match_config lineups carry
+# {"team": {"name": ...}, "startXI", "substitutes"} and no more. The silent ""
+# default meant `side == "home"` was never true, so on 2026-08-14 the Gorleston
+# vs Tilbury run put all 32 players from both squads into the AWAY roster shown
+# to the 3b player agent, and 176 of 223 observations were attributed to the
+# wrong team -- in the prose as well as the label.
+#
+# These accessors therefore RAISE rather than default. The module principle is
+# "no side effects"; raising is not a side effect, it is a pure function
+# declining to invent an answer. A run that cannot tell the teams apart must
+# stop, not produce fluent analysis of the wrong side.
+
+_HOME_ALIASES = ("home", "home_kit", "home_team")
+_AWAY_ALIASES = ("away", "away_kit", "away_team")
+
+
+def normalise_side(value) -> str | None:
+    """Map any home/away spelling used in the pipeline to 'home' or 'away'.
+
+    Accepts the kit forms the vision agents emit ("home_kit"/"away_kit"), the
+    bare forms ("home"/"away") and the team-name forms ("home_team"). Returns
+    None for anything else, including None -- callers that require an answer
+    should use resolve_side_from_team_name or resolve_team_side instead.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip().lower()
+    if v in _HOME_ALIASES:
+        return "home"
+    if v in _AWAY_ALIASES:
+        return "away"
+    return None
+
+
+def resolve_side_from_team_name(team_name: str, mc: dict) -> str:
+    """Return 'home' or 'away' for a literal team name.
+
+    Compares against mc["home_team"] / mc["away_team"], case- and
+    whitespace-insensitively. Raises ValueError when the name matches neither,
+    because guessing here is how an entire match gets attributed to the wrong
+    side.
+    """
+    side = normalise_side(team_name)
+    if side:
+        return side
+    name = (team_name or "").strip().lower()
+    home = (mc.get("home_team") or "").strip().lower()
+    away = (mc.get("away_team") or "").strip().lower()
+    if name and name == home:
+        return "home"
+    if name and name == away:
+        return "away"
+    raise ValueError(
+        f"Cannot resolve team side for {team_name!r}: it matches neither "
+        f"home_team {mc.get('home_team')!r} nor away_team {mc.get('away_team')!r}."
+    )
+
+
+def resolve_team_side(lineup: dict, mc: dict) -> str:
+    """Return 'home' or 'away' for a match_config lineup block.
+
+    Prefers an explicit ``team_side`` when one is present and valid (no live
+    writer produces it, but hand-authored configs may), otherwise derives the
+    side from the team name. Raises ValueError when neither resolves.
+    """
+    explicit = normalise_side((lineup or {}).get("team_side"))
+    if explicit:
+        return explicit
+    team = (lineup or {}).get("team")
+    name = team.get("name", "") if isinstance(team, dict) else (team or "")
+    return resolve_side_from_team_name(name, mc)
+
+
+# ── Match clock vs video clock ───────────────────────────────────────────────
+#
+# The other recurring defect family. A match minute (match_config "elapsed",
+# key_moments "minute") and a video second (window start_s/end_s, frame
+# filenames) are different coordinate systems separated by the pre-match
+# footage and the half-time break. Comparing one to the other without
+# conversion has produced at least four separate bugs: calc_match_state
+# (window_plan), the ground-truth check, the cost estimator's event-window
+# count, and the event-window flag. Every comparison between an event time and
+# a window time must route through here.
+
+_BOUNDARY_KEYS = {
+    "ko_1h":      ("ko_1h",      "ko_1h_seconds",      "ko_1h_s"),
+    "ht_whistle": ("ht_whistle", "ht_whistle_seconds", "ht_s", "ht_whistle_s"),
+    "ko_2h":      ("ko_2h",      "ko_2h_seconds",      "ko_2h_s"),
+    "ft_whistle": ("ft_whistle", "ft_whistle_seconds", "ft_s", "ft_whistle_s"),
+    "ko_et1":     ("ko_et1",     "ko_et1_seconds",     "ko_et1_s"),
+    "ko_et2":     ("ko_et2",     "ko_et2_seconds",     "ko_et2_s"),
+}
+
+
+def get_kickoff_seconds(source: dict) -> dict:
+    """Extract kickoff/whistle video-seconds from any boundary shape we write.
+
+    Three shapes exist in the wild and all are read here:
+      * match_boundaries.json  -> {"boundaries": {"ko_1h": {"seconds": N}, ...}}
+      * set_boundaries.py      -> {"ko_1h_seconds": N, ...} (boundaries_override)
+      * detect_boundaries.py   -> {"ko_1h_s": N, ...}
+
+    Returns a dict with keys ko_1h / ht_whistle / ko_2h / ft_whistle / ko_et1 /
+    ko_et2; values are floats, or None when that boundary is absent. Missing
+    extra-time boundaries are normal; missing ko_1h is not, and callers that
+    need it should check.
+    """
+    src = source or {}
+    nested = src.get("boundaries") if isinstance(src.get("boundaries"), dict) else {}
+    out = {}
+    for canon, aliases in _BOUNDARY_KEYS.items():
+        val = None
+        entry = nested.get(canon)
+        if isinstance(entry, dict) and entry.get("seconds") is not None:
+            val = entry["seconds"]
+        elif isinstance(entry, (int, float)):
+            val = entry
+        if val is None:
+            for a in aliases:
+                cand = src.get(a)
+                if isinstance(cand, dict) and cand.get("seconds") is not None:
+                    val = cand["seconds"]; break
+                if isinstance(cand, (int, float)):
+                    val = cand; break
+        out[canon] = float(val) if val is not None else None
+    return out
+
+
+def match_minute_to_video_s(minute, ko: dict) -> float:
+    """Convert a match-clock minute to a position in video seconds.
+
+    ``ko`` is the dict returned by get_kickoff_seconds. Four-branch mapping so
+    that second-half and extra-time minutes land on the right footage:
+
+      minute <= 45   -> ko_1h + minute*60 (first-half stoppage folds forward
+                        into the second half only if it would overshoot the
+                        half-time whistle)
+      minute <= 90   -> ko_2h + (minute-45)*60
+      minute <= 105  -> ko_et1 + (minute-90)*60   (when ko_et1 is known)
+      otherwise      -> ko_et2 + (minute-105)*60  (when ko_et2 is known)
+
+    Raises TypeError for a non-numeric minute and ValueError when ko_1h is
+    unknown, because a silent 0 here means every event lands on pre-match
+    footage -- which is exactly how this family of bug has bitten before.
+    """
+    if isinstance(minute, bool) or not isinstance(minute, (int, float)):
+        raise TypeError(f"match minute must be numeric, got {minute!r}")
+    ko_1h = (ko or {}).get("ko_1h")
+    if ko_1h is None:
+        raise ValueError(
+            "Cannot convert a match minute without ko_1h. Falling back to 0 "
+            "would place every event in the pre-match footage."
+        )
+    ht    = (ko or {}).get("ht_whistle")
+    ko_2h = (ko or {}).get("ko_2h")
+    et1   = (ko or {}).get("ko_et1")
+    et2   = (ko or {}).get("ko_et2")
+    if ko_2h is None:
+        ko_2h = ko_1h + 45 * 60
+
+    if minute <= 45:
+        vs = ko_1h + minute * 60
+        if ht is not None and vs > ht:
+            # First-half stoppage past the whistle: the footage for it is the
+            # second half, not the break.
+            return ko_2h + (minute - 45) * 60
+        return vs
+    if minute <= 90:
+        return ko_2h + (minute - 45) * 60
+    if minute <= 105 and et1 is not None:
+        return et1 + (minute - 90) * 60
+    if et2 is not None:
+        return et2 + (minute - 105) * 60
+    return ko_2h + (minute - 45) * 60
+
+
+def video_s_to_match_minute(video_s, ko: dict) -> float:
+    """Inverse of match_minute_to_video_s, to the nearest whole second.
+
+    Returns match-clock minutes as a float. Positions inside the half-time
+    break map to the half-time whistle's match minute, since no match clock
+    runs there. Raises ValueError when ko_1h is unknown.
+    """
+    if isinstance(video_s, bool) or not isinstance(video_s, (int, float)):
+        raise TypeError(f"video seconds must be numeric, got {video_s!r}")
+    ko_1h = (ko or {}).get("ko_1h")
+    if ko_1h is None:
+        raise ValueError("Cannot convert video seconds without ko_1h.")
+    ht    = (ko or {}).get("ht_whistle")
+    ko_2h = (ko or {}).get("ko_2h")
+    et1   = (ko or {}).get("ko_et1")
+    et2   = (ko or {}).get("ko_et2")
+    if et2 is not None and video_s >= et2:
+        return 105 + (video_s - et2) / 60
+    if et1 is not None and video_s >= et1:
+        return 90 + (video_s - et1) / 60
+    if ko_2h is not None and video_s >= ko_2h:
+        return 45 + (video_s - ko_2h) / 60
+    if ht is not None and video_s > ht:
+        return (ht - ko_1h) / 60          # inside the break: clock is stopped
+    return max(0.0, (video_s - ko_1h) / 60)

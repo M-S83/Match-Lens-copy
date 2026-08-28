@@ -880,8 +880,13 @@ def build_input_bundle(match_dir: str) -> dict:
         "window_plan":        _load_json(os.path.join(match_dir, "window_plan.json")),
         "running_summary":    running_summary,
         "pass_sequences":     _load_json(os.path.join(match_dir, "pass_sequences.json")),
-        "deep_skill_metrics": _clean_metrics(
-            _load_json(os.path.join(match_dir, "deep_skill_metrics.json"))),
+        # Audited before it reaches the writer: metrics whose underlying
+        # field never varied are removed, and proportions are stripped from
+        # metrics whose denominator is not knowable -- width_usage counts
+        # sequences the agent classified rather than sequences played, and
+        # possession_balance counts exchanges, which alternate by
+        # construction. The counts survive; the percentages do not.
+        "deep_skill_metrics": _audited_metrics(match_dir),
         "ground_truth_check": _load_json(os.path.join(match_dir, "ground_truth_check.json")),
         "shots_log":          _load_json(os.path.join(match_dir, "shots_log.json")),
         # Flagged moments are now folded into the tactical and opposition
@@ -913,6 +918,16 @@ def build_input_bundle(match_dir: str) -> dict:
         "player_summary_cards": _load_json_optional(
             os.path.join(match_dir, "player_summary_cards.json")),
     }
+
+
+def _audited_metrics(match_dir: str) -> dict:
+    import metric_audit
+    bundle = _clean_metrics(
+        _load_json(os.path.join(match_dir, "deep_skill_metrics.json")))
+    if isinstance(bundle, dict) and isinstance(bundle.get("metrics"), list):
+        bundle = dict(bundle,
+                      metrics=metric_audit.apply(bundle["metrics"], match_dir))
+    return bundle
 
 
 def _live_play_minutes(match_dir: str):

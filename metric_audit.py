@@ -121,6 +121,62 @@ def audit(match_dir):
                         for v in order}}
 
 
+# Field names that express a proportion. On a counts_only metric these are the
+# part that cannot be justified: the counts survive, the ratio does not.
+RATE_KEYS = ("_rate", "_pct", "_share", "score", "percentage")
+
+
+def _looks_like_a_rate(key, value):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    return any(k in key.lower() for k in RATE_KEYS)
+
+
+def strip_rates(value):
+    """Remove proportions from a metric value, keeping the counts.
+
+    "Nine duels won, none lost" survives; "82%" does not. Applied to the
+    bundle rather than enforced by instruction, because a rule telling a
+    writer to ignore a number it has been handed has failed three times in
+    this project.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if _looks_like_a_rate(k, v):
+                continue
+            if isinstance(v, str) and "%" in v:
+                continue          # prose summaries carry the rate as text
+            out[k] = strip_rates(v) if isinstance(v, (dict, list)) else v
+        return out
+    if isinstance(value, list):
+        return [strip_rates(v) for v in value]
+    return value
+
+
+def apply(metrics, match_dir):
+    """Metrics as the report writer should receive them.
+
+    withhold    -> removed entirely
+    counts_only -> proportions stripped, counts kept
+    otherwise   -> unchanged, with the verdict attached so the grader can see it
+    """
+    verdicts = {r["metric"]: r for r in audit(match_dir)["rows"]}
+    out = []
+    for m in metrics or []:
+        row = verdicts.get(m.get("metric_name"))
+        if row is None:
+            out.append(m)
+            continue
+        if row["verdict"] == "withhold":
+            continue
+        m = dict(m, audit=row)
+        if row["verdict"] == "counts_only":
+            m["value"] = strip_rates(m.get("value"))
+        out.append(m)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("match_dir")

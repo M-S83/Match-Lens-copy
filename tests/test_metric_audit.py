@@ -117,3 +117,76 @@ def test_the_rate_threshold_is_not_below_ten(tmp_path):
 def test_a_missing_metrics_file_audits_nothing_rather_than_failing(tmp_path):
     r = audit(str(tmp_path))
     assert r["metrics_audited"] == 0
+
+
+# ── the audit reaches the writer, it does not merely report ──────────────────
+
+def test_a_withheld_metric_is_removed_not_annotated(tmp_path):
+    """Absent beats forbidden, for the fourth time in this project."""
+    from metric_audit import apply
+
+    md = _match(
+        tmp_path,
+        [_metric("shape_thing", family="shape", status="downgraded"),
+         _metric("keeper", family="chance_patterns")],
+        variance={"not_measured": ["f.x"], "fields": {"f.x": {"family": "shape"}}})
+    names = [m["metric_name"] for m in apply(
+        [_metric("shape_thing", family="shape", status="downgraded"),
+         _metric("keeper", family="chance_patterns")], md)]
+
+    assert "shape_thing" not in names
+    assert "keeper" in names
+
+
+def test_counts_survive_and_proportions_do_not(tmp_path):
+    from metric_audit import apply
+
+    src = [{"metric_name": "duel_effectiveness",
+            "supporting_result_families": ["player_duels"],
+            "result_family_status": "allowed",
+            "value": {"#4 home_kit": {"total": 11, "won": 9,
+                                      "win_rate": 0.82,
+                                      "retention_rate": 0.78}}}]
+    # apply() reads its verdicts from the file, so the metric has to be in it.
+    m = apply(src, _match(tmp_path, src))[0]
+    rec = m["value"]["#4 home_kit"]
+
+    assert rec == {"total": 11, "won": 9}, "counts kept, rates gone"
+    assert m["audit"]["verdict"] == "counts_only"
+
+
+def test_a_rate_hidden_in_a_prose_summary_is_also_removed(tmp_path):
+    """width_usage carried the figure twice: score 0.05 and a summary string
+    reading '5% of sequences used wide channels'. Removing only the number
+    leaves the sentence to be quoted."""
+    from metric_audit import apply
+
+    src = [{"metric_name": "width_usage_score",
+            "supporting_result_families": ["spacing"],
+            "result_family_status": "downgraded",
+            "value": {"score": 0.05, "method": "zone_labels",
+                      "summary": "5% of sequences used wide channels"}}]
+    m = apply(src, _match(tmp_path, src))[0]
+
+    assert m["value"] == {"method": "zone_labels"}
+
+
+def test_a_sound_metric_passes_through_untouched(tmp_path):
+    from metric_audit import apply
+
+    src = {"metric_name": "chance_creation_profile",
+           "supporting_result_families": ["chance_patterns"],
+           "result_family_status": "allowed",
+           "value": {"threat_sequences": 17, "conversion_rate_pct": 4.0}}
+
+    m = apply([src], _match(tmp_path, [src]))[0]
+    assert m["value"] == src["value"], "publish means publish"
+
+
+def test_an_unaudited_metric_is_left_alone(tmp_path):
+    """A metric the audit has no opinion on must not be silently dropped."""
+    from metric_audit import apply
+
+    md = _match(tmp_path, [])
+    m = apply([{"metric_name": "brand_new_thing", "value": {"n": 5}}], md)[0]
+    assert m["value"] == {"n": 5}

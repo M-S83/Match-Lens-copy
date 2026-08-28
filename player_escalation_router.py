@@ -47,6 +47,72 @@ FPS_BY_CATEGORY = {
 
 CAP_PLAYER_ACTIONS = 5
 
+# Where the confirmation prompt template lives, relative to this file.
+PROMPT_TEMPLATE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "prompts", "05_player_action_confirmation.md")
+
+
+def escalation_is_available(match_dir: str) -> tuple:
+    """(can this step do anything, why not).
+
+    Step 3i has never produced a confirmation on any run, and nothing said
+    so: the phase is wrapped in `except Exception: print(... non-blocking,
+    continuing)`, so a fatal misconfiguration reads as one warning line in a
+    long log. Three things are wrong with it, and each is checkable.
+
+    1. PROMPT_TEMPLATE does not exist. build_player_action_confirmation_prompt
+       opens it unconditionally, so the phase raises on its first item. The
+       path it used also resolved to <repo>/../prompts, outside the repo
+       entirely, so creating the directory in the obvious place would not
+       have helped.
+
+    2. ELIGIBLE_CATEGORIES accepted 1 of 45 queued items on the Gorleston
+       match. The player agent writes its own vocabulary -- movement_off_ball,
+       hold_up_play, aerial_ability -- and the five categories here appear
+       almost never.
+
+    3. Worse, and fatal: merge_player_confirmation_into_window writes back
+       into individual_observations, matching on player + timestamp +
+       action_category. Not one of the 265 individual_observations on that
+       match used an eligible category. The overlap between the two
+       vocabularies is empty, so even a confirmation that came back
+       "confirmed" would match no observation and be discarded.
+
+    Until 1 and 3 are fixed the step cannot succeed, so it is gated off here
+    rather than left to fail quietly inside a broad except.
+    """
+    if not os.path.exists(PROMPT_TEMPLATE):
+        return (False, "confirmation prompt template is missing: %s"
+                       % PROMPT_TEMPLATE)
+
+    present = observed_categories(match_dir)
+    if present and not (present & ELIGIBLE_CATEGORIES):
+        return (False,
+                "no individual_observation uses an eligible category, so a "
+                "confirmation could never be written back. observed: %s; "
+                "eligible: %s"
+                % (", ".join(sorted(present)[:6]),
+                   ", ".join(sorted(ELIGIBLE_CATEGORIES))))
+    return (True, "")
+
+
+def observed_categories(match_dir: str) -> set:
+    """Every action_category present in individual_observations."""
+    found = set()
+    for path in sorted(glob.glob(os.path.join(
+            match_dir, "agent_logs", "*_merged.json"))):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for obs in data.get("individual_observations") or []:
+            cat = obs.get("action_category")
+            if cat:
+                found.add(cat)
+    return found
+
 
 def _parse_mmss(s):
     """'34m12s' -> 2052 seconds. Returns None on parse failure."""
@@ -103,7 +169,13 @@ def build_player_escalation_queue(match_dir):
             if not item.get("rerun_window_start") or not item.get("rerun_window_end"):
                 ts_sec = _parse_mmss(item.get("timestamp"))
                 if ts_sec is not None:
-                    item["rerun_window_start"] = _seconds_to_mmss(ts_sec - 2)
+                    # Clamp at the start of the match. _seconds_to_mmss
+                    # returns None for a negative value, so an observation at
+                    # 00m00s -- 45% of them on the Gorleston match, because
+                    # the player agent stamps that when it cannot place the
+                    # moment -- produced rerun_window_start: null and a burst
+                    # extraction with no start.
+                    item["rerun_window_start"] = _seconds_to_mmss(max(0, ts_sec - 2))
                     item["rerun_window_end"]   = _seconds_to_mmss(ts_sec + 2)
 
             item["source_window"] = data.get("window")

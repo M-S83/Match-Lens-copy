@@ -1886,11 +1886,11 @@ def build_player_action_confirmation_prompt(match_dir: str,
                      File basenames are listed in the prompt so the
                      agent knows which images correspond to which moment.
     """
-    prompt_path = os.path.join(
-        os.path.dirname(__file__), "..", "prompts",
-        "05_player_action_confirmation.md"
-    )
-    with open(prompt_path, encoding="utf-8") as _pf:
+    # The ".." here resolved to <repo>/../prompts -- outside the repository
+    # -- so the template could never be found however it was installed.
+    # One definition, in the router, shared with escalation_is_available.
+    from player_escalation_router import PROMPT_TEMPLATE as _pa_template_path
+    with open(_pa_template_path, encoding="utf-8") as _pf:
         template = _pf.read()
 
     # Team / kit framing. mc.focus_team is optional (production
@@ -2792,7 +2792,8 @@ def run_pipeline(match_dir: str, quality: str = "standard",
         )
         from batch_runner import build_request as _build_req
         from player_escalation_router import (
-            merge_player_confirmation_into_window as _pa_merge
+            merge_player_confirmation_into_window as _pa_merge,
+            escalation_is_available as _pa_available,
         )
 
         _peq_path = os.path.join(match_dir, "player_escalation_queue.json")
@@ -2802,6 +2803,17 @@ def run_pipeline(match_dir: str, quality: str = "standard",
             _pa_items = (
                 _peq.get("accepted", []) if isinstance(_peq, dict) else []
             )
+
+            _pa_ok, _pa_why = _pa_available(match_dir)
+            if _pa_items and not _pa_ok:
+                # Not an error to swallow and not a silent skip. This step has
+                # never produced a confirmation on any run; saying so once,
+                # plainly, is the difference between a known gap and a phase
+                # everyone assumes is working.
+                print(f"\n  PHASE 3b-player: Step 3i_player_action DISABLED "
+                      f"-- {len(_pa_items)} item(s) queued but not submitted.")
+                print(f"    Reason: {_pa_why}")
+                _pa_items = []
 
             if _pa_items:
                 print(f"\n  PHASE 3b-player: Step 3i_player_action "

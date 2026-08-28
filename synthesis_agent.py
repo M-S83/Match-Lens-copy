@@ -108,9 +108,20 @@ A-E ATTRIBUTE SCALE (player profiles only):
 Attribute scores come from observation data only. Score only attributes
 with supporting observations. Do not estimate.
 
-FORMATION RULE: When describing team formations, use the
-canonical_formation from running_summary as the primary label.
-However, if the formation distribution shows a meaningful split
+FORMATION RULE: use canonical_formation from running_summary as the
+primary label.
+
+If canonical_formation is "not_measured", this source did not
+resolve formation for this match. Do not name a formation. Do not
+infer one from player positions, and do not lift one out of a
+free-text observation field where a label happens to appear. Above
+all, do not write that the shape was settled, consistent or
+unchanged — the absence of variation is why the field was rejected,
+so offering it as a finding inverts the evidence. One sentence
+saying formation was not resolvable from this source is the
+complete treatment; then move on to what was observed.
+
+Otherwise, if the formation distribution shows a meaningful split
 across windows, describe the variation rather than stating a
 single fixed formation.
 
@@ -150,7 +161,7 @@ front line, creating a 3-2-5 structure with the double pivot staying
 deep [A — observed in multiple phases]"
 
 "PSG's 4-3-3 compressed to a 4-5-1 out of possession throughout the
-match, with both wide forwards tracking back deep [A]"
+match, with both wide forwards tracking back deep [grade]"
 
 Do NOT describe IP shape variations as formations — they are
 phase-specific shape changes within the primary formation.
@@ -200,10 +211,10 @@ Apply these thresholds strictly:
 - run_type_confidence: "consistent" (5+ observations) -> assert
   as fact, in match-clock or frequency language:
   "Kymani Thomas consistently dropped deep to receive throughout
-   the match rather than running in behind [A]"
+   the match rather than running in behind [grade]"
 - run_type_confidence: "tendency" (3-4 observations) -> note with
   caveat:
-  "Thomas frequently dropped into midfield to receive [B]"
+  "Thomas frequently dropped into midfield to receive [grade]"
 - run_type_confidence: "insufficient" (1-2) -> do not report as a
   pattern. Individual note only if highly significant.
 
@@ -217,12 +228,12 @@ profile. Apply the SAME thresholds as run_type.
     "between_mid_fwd" -> "between the midfield and forward lines"
     "between_fb_cb"   -> "between the fullback and centre-back"
 
-  between_lines_confidence "consistent" -> [A]:
+  between_lines_confidence "consistent" -> count axis permits [A]:
     "Musiala consistently received between the defensive and
-     midfield lines [A]"
-  between_lines_confidence "tendency"   -> [B]:
+     midfield lines [grade]"
+  between_lines_confidence "tendency"   -> count axis permits [B]:
     "Musiala frequently dropped between the midfield and forward
-     lines [B]"
+     lines [grade]"
   between_lines_confidence "insufficient" -> do not report as a
   pattern.
 
@@ -235,40 +246,76 @@ for those windows. Reporting "no clear between-lines pattern" is
 itself a fabrication when the field is absent; just omit the clause
 entirely.
 
-ACCUMULATOR AUTHORITY (Fix 54): The accumulator's confidence
-classification is the authoritative source for evidence grading
-in tendency statements. Do not downgrade based on observation text.
+EVIDENCE GRADE HAS TWO AXES. The grade is the LOWER of them.
+(This supersedes Fix 54, which had only the first.)
 
-  accumulator "consistent" → always [A] in the report
-  accumulator "tendency"   → always [B] in the report
+AXIS 1 — COUNT: how many observations support the pattern.
+The accumulator owns this and is authoritative. Do NOT downgrade
+because an observation's prose reads uncertain — the count
+supersedes the impression. The accumulator has already applied the
+threshold (5+ observations for consistent, 3-4 for tendency).
+A player observed dropping deep 14 times is consistent regardless
+of whether any single description sounds hesitant. Quote-hedge
+("appeared to", "seemed", "not consistent enough") is forbidden
+against a consistent classification.
+
+  accumulator "consistent"   → count axis permits [A]
+  accumulator "tendency"     → count axis permits [B]
   accumulator "insufficient" → do not report as a pattern
 
-Never write [C] or [D] for an accumulator-classified tendency.
-The accumulator has already applied the threshold (5+ observations
-for consistent, 3-4 for tendency) — the evidence has been counted.
-If the observation text seems mixed, the count supersedes the
-impression. A player observed dropping deep 14 times is consistent
-regardless of whether any single observation description reads as
-uncertain. Quote-hedge ("appeared to", "seemed", "tendency was not
-consistent enough") is forbidden when the accumulator says
-consistent — state the pattern as fact with [A].
+AXIS 2 — OBSERVABILITY: whether this camera can see the thing at
+all. result_family_gates in the input bundle owns this. Count
+cannot rescue it. Fourteen observations of something the camera
+cannot resolve are fourteen observations of nothing.
+
+  family "allowed"    → observability axis permits [A]
+  family "downgraded" → observability axis permits [B] at most
+  family "suppressed" → do not report the finding at all
+
+So an accumulator-consistent pattern in a downgraded family is
+[B] on the observability axis. Not [A] with a caveat sentence — [B].
+
+Worked example. "Reid pushed consistently high throughout the
+first half" — positioning_confidence is "consistent", so the count
+axis permits [A]; the finding belongs to player_positioning, and
+if that family is "downgraded" for this source the observability
+axis permits [B]; the lower of the two is [B]. Write [B].
+
+EVERY EXAMPLE SENTENCE BELOW ENDS IN [grade], NOT A LETTER. That
+is deliberate. The right letter depends on the family gate for
+THIS match, which the examples cannot know, and an example
+carrying a literal grade letter is a stronger signal than any
+axis rule contradicting it. Compute the grade from the two axes above and
+write the letter. Never emit the word "grade" or the token
+[grade] in your output — it appears only in these examples.
+
+NOT-MEASURED FIELDS: field_variance.not_measured lists fields that
+returned the same value in every window of the match. A field that
+answers the same thing whether it was shown minute 3 or minute 87
+is not measuring anything, and its constancy is the evidence of
+that — not evidence of a stable pattern. Say NOTHING about any
+field named there: no grade, no hedged mention, and never
+"consistently X throughout". Omit it. If a section would consist
+only of such fields, write one line saying the source did not
+resolve it and move on.
 
 For fullbacks, always note the dominant positioning when
 positioning_confidence is consistent or tendency:
-"Reid pushed consistently high throughout the first half [A] —
+"Reid pushed consistently high throughout the first half [grade] —
 his advanced position created width and left space behind on
 defensive transitions"
 "Laimer combined defensive discipline with frequent late box
-arrivals [B]"
+arrivals [grade]"
 
 GK DISTRIBUTION RULE: If a goalkeeper has gk_total_kicks >= 5 in
 player_tendencies, assert their distribution pattern explicitly in
 the opposition report GK profile section.
 
 GK distribution confidence classifications from player_tendencies
-are authoritative (Fix 54):
-  gk_zone_confidence "consistent"   → [A] in the report
-  gk_zone_confidence "tendency"     → [B] in the report
+are authoritative on the COUNT axis (the observability axis still
+applies — see EVIDENCE GRADE HAS TWO AXES above):
+  gk_zone_confidence "consistent"   → count axis permits [A]
+  gk_zone_confidence "tendency"     → count axis permits [B]
   gk_length_confidence follows the same rule.
 
 Do not downgrade based on a general assessment of the goalkeeper.
@@ -279,18 +326,18 @@ floor (top zone ≥35% of total) before labelling "consistent".
 For zone (state the distribution and any in-match consequence):
 "Neuer distributed predominantly to the right channel throughout
 the match (7 of 11 goal kicks -- left_channel 3, right_channel 7,
-central 1) [A]. PSG's first-half pressing shape did not
+central 1) [grade]. PSG's first-half pressing shape did not
 consistently position a press trigger on his preferred
 distribution side; in the second half Mbappe and Dembele
 shifted to cover the right channel and Neuer's distribution
-broke up on two occasions, producing turnovers in midfield [B]."
+broke up on two occasions, producing turnovers in midfield [grade]."
 
 For length (state the distribution and any in-match consequence):
 "Safonov favoured short distribution from goal kicks (8 of 11
-kicks short to the centre-backs) [A]. Bayern engaged the
+kicks short to the centre-backs) [grade]. Bayern engaged the
 centre-backs early on five of those eight restarts, forcing
 two ball recoveries in the defending third and three resets
-back to Safonov [B]."
+back to Safonov [grade]."
 
 Do not mention distribution if gk_total_kicks < 5.
 Do not guess distribution pattern if not in the data.
@@ -312,21 +359,21 @@ the observation and decides what to do with it.
 Formula: [observation with grade] -> [in-match consequence if any]
 Examples:
 "Reid maintained high right-back positioning throughout the first
-half [A]. When possession turned over quickly, the space behind
+half [grade]. When possession turned over quickly, the space behind
 him was briefly unoccupied before the back four recovered."
 
 "PSG's fullbacks held mid positioning consistently when defending
-[A], producing a compact shape with limited recovery distance to
+[grade], producing a compact shape with limited recovery distance to
 cover. Bayern attempted no sustained wide overloads against this
-structure during the match [B]."
+structure during the match [grade]."
 
-"Kymani Thomas dropped deep consistently to receive [A], pulling
+"Kymani Thomas dropped deep consistently to receive [grade], pulling
 the Brentwood defensive line forward. The space he vacated was
 attacked by midfield runs on three occasions, producing one shot
 and two cleared deliveries."
 
 If no consistent pattern exists, state that plainly:
-"[Player] maintained positional discipline throughout [A]; no
+"[Player] maintained positional discipline throughout [grade]; no
 recurring pattern observed."
 
 This rule applies to every opposition report. Never include
@@ -375,13 +422,13 @@ factually.
 WRONG: "Neuer's right-channel preference creates a predictable
         pattern — press his distribution to force play back."
 RIGHT: "Neuer distributed predominantly to the right channel
-        throughout the match [A]. This created a consistent
+        throughout the match [grade]. This created a consistent
         first-ball pattern that PSG were unable to disrupt."
 
 WRONG: "Both fullbacks leave space behind them — a ball in behind
         would be effective on the transition."
 RIGHT: "Both fullbacks maintained high positioning throughout the
-        first half [A]. When possession turned over quickly, the
+        first half [grade]. When possession turned over quickly, the
         space behind them was briefly unoccupied before recovery."
 
 The Exploitable Patterns section in advanced reports is renamed
@@ -663,6 +710,10 @@ REQUIRED_FILES = [
 # Optional files — logged as warnings if missing but do not block
 OPTIONAL_FILES = [
     "deep_skill_metrics.json",
+    # Carries result_family_gates -- the observability axis of the evidence
+    # grade. Without it the report grades everything on count alone, which is
+    # how a downgraded family reached [A].
+    "confidence_reliability_report.json",
     "ground_truth_check.json",
     "shots_log.json",
     "report_readiness.json",
@@ -792,6 +843,13 @@ def build_input_bundle(match_dir: str) -> dict:
 
     running_summary = _load_json(os.path.join(match_dir, "running_summary.json"))
 
+    # Order matters: classify first, redact second. Redacting first would
+    # replace the values the classifier reads and every field would look
+    # measured.
+    import field_variance as _fv
+    variance        = _field_variance(match_dir, running_summary)
+    running_summary = _fv.redact(running_summary, variance)
+
     return {
         "match_config":       _load_json(os.path.join(match_dir, "match_config.json")),
         "window_plan":        _load_json(os.path.join(match_dir, "window_plan.json")),
@@ -813,6 +871,15 @@ def build_input_bundle(match_dir: str) -> dict:
         "flagged_moments":    (running_summary or {}).get("flagged_moments", []),
         "key_moments":        (running_summary or {}).get("key_moments", []),
         "report_readiness":   _load_json(os.path.join(match_dir, "report_readiness.json")),
+        # The observability axis. source_profiler decides these from the
+        # footage type; the report must not grade above the ceiling they set.
+        "result_family_gates": _load_json(
+            os.path.join(match_dir, "confidence_reliability_report.json")
+        ).get("result_family_gates", {}),
+        # Fields that returned the same value in every window, and so were
+        # never measured. Computed here rather than read, so it can never be
+        # stale relative to the running_summary it describes.
+        "field_variance":     variance,
         # v3 Step 7: player_summary_cards surfaced under a stable key.
         # Empty dict on absence (graceful-degradation contract); the
         # report-writing prompts detect the empty case and fall back to
@@ -820,6 +887,24 @@ def build_input_bundle(match_dir: str) -> dict:
         "player_summary_cards": _load_json_optional(
             os.path.join(match_dir, "player_summary_cards.json")),
     }
+
+
+def _field_variance(match_dir: str, running_summary: dict) -> dict:
+    """Which structural fields never varied across the match.
+
+    A stuck field and a genuinely stable pattern read identically in prose,
+    so the report cannot be the place this is caught. The write is a
+    convenience for inspection; failing to write it must not stop synthesis,
+    but failing to COMPUTE it must, because the grader's not-measured rule
+    depends on it.
+    """
+    import field_variance
+    try:
+        return field_variance.compute(match_dir, running_summary)
+    except OSError as e:
+        print(f"  [WARN] field_variance.json not written ({e}); "
+              f"computing in memory")
+        return field_variance.compute(match_dir, running_summary, write=False)
 
 
 def _summarise_bundle(bundle: dict) -> str:

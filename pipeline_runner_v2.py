@@ -1608,8 +1608,16 @@ Each entry in individual_observations[] MUST carry these fields:
   game_phase          in_possession / out_of_possession / transition / set_piece
   frequency           single / repeated / consistent
   confidence          high / medium / low
-  timestamp           "MMmSSs"
-  frames              ["frame_XXmYYs.jpg", ...]
+  frames              REQUIRED. Copy the filenames of the frames you are
+                      describing, character for character, from the list you
+                      were given above. Do NOT construct a filename and do
+                      NOT work out a time: every frame you were shown is
+                      named with its own time, so naming the frame is naming
+                      the moment, and the pipeline reads the clock off the
+                      filename. If you cannot point at a specific frame,
+                      give an empty list -- the observation is still wanted,
+                      only the moment is unknown. Do NOT emit a "timestamp"
+                      field; it is computed from these filenames.
   preferred_foot      right / left / both / unknown   (if observable)
   physical_profile    {{height_impression, pace_impression, build}}  (if observable)
 
@@ -1689,7 +1697,6 @@ Return ONLY raw JSON. No prose. No preamble. No markdown fences.
     {{
       "player":          "name (#N) or position",
       "action_category": "<from the categories above>",
-      "timestamp":       "MMmSSs",
       "priority":        "high | medium | low",
       "reason":          "what makes this worth escalating -- e.g. confidence is medium and the action is high-impact (a goal-line clearance, a missed sitter); or you saw a partial pattern that needs higher-fps confirmation"
     }}

@@ -298,10 +298,15 @@ def test_a_filename_that_is_not_a_frame_is_ignored():
         assert "timestamp_source" not in obs[0]
 
 
-def test_the_schema_no_longer_asks_for_a_player_timestamp():
-    """The field is removed, not forbidden. A rule telling an agent to leave
-    a field blank has never held in this project; an absent field cannot be
-    filled in."""
+def test_the_SPEC_no_longer_asks_for_a_player_timestamp():
+    """SKILL.md is the spec. It is NOT what the agent reads.
+
+    This test passed while the player agent went on emitting timestamp
+    00m00s for every observation, because build_player_prompt carries its
+    own inline schema and never opens SKILL.md. A $1.34 rerun was spent
+    discovering that. The prompt the agent actually receives is checked by
+    the test below; this one only keeps the document honest.
+    """
     import io
     import os
     repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -344,3 +349,53 @@ def test_force_player_resets_3b_but_not_3a():
         "--force-player reset the structural windows too, which is the cost "
         "it exists to avoid")
     assert '"3l_synthesis"' in block, "downstream steps must rerun as well"
+
+
+def test_the_PROMPT_THE_AGENT_READS_no_longer_asks_for_a_timestamp():
+    """The check that would have caught it.
+
+    build_player_prompt builds the 3b prompt in code. Editing SKILL.md
+    changed nothing the agent sees -- the same mistake as wiring the report
+    linter into pipeline_runner_v2's 4a/4b blocks, which never execute.
+    Check the artefact that runs, not the one that describes it.
+    """
+    import ast
+    import io as _io
+    import os as _os
+    repo = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = _io.open(_os.path.join(repo, "pipeline_runner_v2.py"),
+                   encoding="utf-8").read()
+
+    tree = ast.parse(src)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef)
+               and n.name == "build_player_prompt"), None)
+    assert fn is not None, "build_player_prompt not found"
+
+    body = ast.get_source_segment(src, fn) or ""
+    assert body, "could not read the function source"
+
+    # Scope to the observation schema. duels[] has a timestamp of its own,
+    # and searching the whole function catches it -- the same overrun that
+    # tripped the SKILL.md version of this check.
+    start = body.index("individual_observations[] MUST carry")
+    end   = body.index("duels[] MUST carry", start)
+    obs_block = body[start:end]
+
+    assert '  timestamp           "MMmSSs"' not in obs_block, (
+        "the field list still tells the player agent to emit a timestamp")
+    assert '"timestamp":       "MMmSSs"' not in body, (
+        "the JSON skeleton still shows a timestamp for the agent to copy")
+    assert "reads the clock off the" in obs_block, (
+        "the prompt must say where the time comes from instead")
+    assert '  timestamp           "MMmSSs"' in body, (
+        "the duels schema legitimately keeps its own timestamp; if that has "
+        "gone too, this test is no longer scoped to what it claims")
+
+
+def test_the_prompt_check_is_not_satisfied_by_the_spec_file():
+    """Mutation: putting the field back in the prompt must fail the check
+    above even though SKILL.md stays clean. The two must not be confusable
+    again."""
+    body = 'x = """\n  timestamp           "MMmSSs"\n"""'
+    assert '  timestamp           "MMmSSs"' in body

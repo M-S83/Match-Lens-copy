@@ -198,6 +198,38 @@ def strip_rates(value):
     return value
 
 
+# Text fields that describe HOW a metric is computed rather than what this
+# match did. "Pattern reliability (60%) + inverse route diversity (40%)" is a
+# formula, not a reading, and removing it would cost traceability for no gain.
+METHOD_FIELDS = ("calculation_basis", "value_type", "sample_status")
+
+_PCT_IN_PROSE = re.compile(r"\d+(?:\.\d+)?\s*%")
+
+
+def _strip_rate_prose(metric: dict) -> dict:
+    """Remove match rates that survive as sentences beside the value.
+
+    strip_rates cleans `value`. It does not touch prose_interpretation, which
+    on this match still read "37.0% of sequences used the dominant route" and
+    "31.5% of 429 sequences reached the final third" -- the audit removing a
+    figure from one key and handing the writer the same figure, in words, one
+    key to the right. The report duly published 37%.
+
+    This is the third time a suppression mechanism has leaked through a
+    neighbouring field: pressing peak beside a redacted avg_score, a bare
+    "rate" key that RATE_KEYS could not see, and now this. Removing the
+    number is the only thing that works -- a rule telling the writer to
+    ignore a figure it has been handed has never once held.
+    """
+    out = dict(metric)
+    for key, value in metric.items():
+        if key in METHOD_FIELDS or not isinstance(value, str):
+            continue
+        if _PCT_IN_PROSE.search(value):
+            out.pop(key, None)
+    return out
+
+
 def apply(metrics, match_dir):
     """Metrics as the report writer should receive them.
 
@@ -217,6 +249,7 @@ def apply(metrics, match_dir):
         m = dict(m, audit=row)
         if row["verdict"] == "counts_only":
             m["value"] = strip_rates(m.get("value"))
+            m = _strip_rate_prose(m)
         out.append(m)
     return out
 

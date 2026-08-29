@@ -290,3 +290,74 @@ def test_json_round_tripped_values_still_compare():
     round_tripped = json.loads(json.dumps(fields))
     assert _FV.mark_shared_defaults(round_tripped) == [
         "pressing_by_window.away_intensity"]
+
+
+# ── a withheld label hiding in prose ──────────────────────────────────────
+#
+# formation_history.home_formation was not_measured and correctly redacted,
+# and the regenerated report still said "operating from a compact 4-4-2
+# mid-block". Two key_moments descriptions mention 4-4-2, and free text is
+# out of scope for a distinct-value count, so nothing removed it.
+
+def _formation_match(descriptions):
+    return {"match": "t",
+            "formation_history": [{"window": f"w{i:02d}",
+                                   "home_formation": "4-4-2",
+                                   "away_formation": "4-4-2"}
+                                  for i in range(21)],
+            "key_moments": [{"description": d} for d in descriptions]}
+
+
+def test_a_withheld_formation_is_scrubbed_from_free_text():
+    summary = _formation_match([
+        "Gorleston settle into a compact 4-4-2 mid-block to absorb pressure."])
+    report = _FV.compute("", running_summary=summary, write=False)
+    out    = _FV.redact(summary, report)
+    assert "4-4-2" not in json.dumps(out)
+    assert _FV.PROSE_REPLACEMENT in out["key_moments"][0]["description"]
+
+
+def test_the_rest_of_the_sentence_survives():
+    summary = _formation_match([
+        "Gorleston settle into a compact 4-4-2 mid-block to absorb pressure."])
+    out = _FV.redact(summary, _FV.compute("", running_summary=summary,
+                                          write=False))
+    text = out["key_moments"][0]["description"]
+    assert text.startswith("Gorleston settle into a compact")
+    assert text.endswith("mid-block to absorb pressure.")
+
+
+def test_only_formation_shaped_values_are_scrubbed():
+    """home_shape is stuck on "mid". Removing "mid" from prose would destroy
+    every description in the file, so an ordinary word is never scrubbed."""
+    summary = {"match": "t",
+               "formation_history": [{"home_shape": "mid", "away_shape": "mid"}
+                                     for _ in range(21)],
+               "key_moments": [{"description": "A compact mid-block, "
+                                               "defending in midfield."}]}
+    report = _FV.compute("", running_summary=summary, write=False)
+    assert _FV.withheld_prose_tokens(report) == []
+    out = _FV.redact(summary, report)
+    assert out["key_moments"][0]["description"] == (
+        "A compact mid-block, defending in midfield.")
+
+
+def test_a_measured_formation_is_left_in_the_prose():
+    """A team that genuinely changed shape has a reportable formation, and
+    the label must survive in the descriptions that discuss it."""
+    rows = [{"home_formation": f, "away_formation": f} for f in
+            ["4-4-2"] * 7 + ["4-3-3"] * 7 + ["3-5-2"] * 7]
+    summary = {"match": "t", "formation_history": rows,
+               "key_moments": [{"description": "They switched to 4-3-3."}]}
+    out = _FV.redact(summary, _FV.compute("", running_summary=summary,
+                                          write=False))
+    assert out["key_moments"][0]["description"] == "They switched to 4-3-3."
+
+
+def test_a_scoreline_is_not_mistaken_for_a_formation():
+    """"2-0" is digits joined by a dash. It must never be scrubbed, and the
+    guard is that it is not a value any withheld field returned."""
+    summary = _formation_match(["Gorleston led 2-0 at the interval."])
+    out = _FV.redact(summary, _FV.compute("", running_summary=summary,
+                                          write=False))
+    assert "2-0" in out["key_moments"][0]["description"]

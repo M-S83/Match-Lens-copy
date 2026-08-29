@@ -52,6 +52,7 @@ have said the same thing either way. Silence is the honest answer.
 """
 import json
 import os
+import re
 import sys
 from collections import Counter
 
@@ -524,7 +525,52 @@ def redact(running_summary: dict, report: dict) -> dict:
         if derived in out and any(s in flagged for s in sources):
             out[derived] = NOT_MEASURED
 
-    return out
+    # The label can also sit in agent prose, which no per-field redaction
+    # reaches. See withheld_prose_tokens for why this is narrow.
+    return scrub_prose(out, withheld_prose_tokens(report))
+
+
+# A withheld value can reappear inside prose the variance test cannot judge.
+# On this match formation_history.home_formation was not_measured and
+# correctly redacted, and the report still said "operating from a compact
+# 4-4-2 mid-block" -- because two key_moments descriptions mention 4-4-2 and
+# free text is out of scope for a distinct-value count.
+#
+# Scrubbing prose in general would be reckless: home_shape is stuck on "mid",
+# and removing "mid" from descriptions would destroy them. So this is
+# deliberately narrow. Only a value shaped like a formation is scrubbed --
+# digits joined by dashes, which cannot be mistaken for an ordinary word.
+FORMATION_TOKEN = re.compile(r"^\d(?:-\d){1,3}$")
+PROSE_REPLACEMENT = "[shape not measured]"
+
+
+def withheld_prose_tokens(report: dict) -> list:
+    """Distinctive string values that a withheld field kept returning."""
+    tokens = set()
+    for key, rec in (report.get("fields") or {}).items():
+        if rec.get("verdict") not in UNMEASURED:
+            continue
+        for value in (rec.get("values") or {}):
+            text = str(value)
+            if FORMATION_TOKEN.match(text):
+                tokens.add(text)
+    return sorted(tokens)
+
+
+def scrub_prose(obj, tokens):
+    """Replace withheld formation labels wherever they appear in free text."""
+    if not tokens:
+        return obj
+    if isinstance(obj, dict):
+        return {k: scrub_prose(v, tokens) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [scrub_prose(v, tokens) for v in obj]
+    if isinstance(obj, str):
+        for token in tokens:
+            obj = re.sub(r"(?<![\d-])%s(?![\d-])" % re.escape(token),
+                         PROSE_REPLACEMENT, obj)
+        return obj
+    return obj
 
 
 def format_report(report: dict) -> str:

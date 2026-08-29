@@ -41,10 +41,36 @@ def test_an_a_grade_on_a_downgraded_family_is_flagged():
     assert "a_grade_on_downgraded_family" in _checks(out)
 
 
-def test_an_a_grade_earned_by_consistency_alone_is_flagged():
-    out = RL.lint("Forbes ran in behind [A — run_type consistent across 11].",
-                  GATES)
-    assert "a_grade_justified_by_consistency" in _checks(out)
+def test_an_a_grade_earned_by_consistency_on_an_ALLOWED_family_is_fine():
+    """Count axis consistent, observability axis allowed, lower of the two is
+    [A]. That is the rule working, not a defect.
+
+    The first version flagged every consistency-justified [A] regardless of
+    family and produced three false positives in one report -- "run-in-behind
+    movements [A - consistent across the majority of phases observed]" is
+    player_movement, which this source allows. A checker that queries correct
+    work is how a checker gets ignored.
+    """
+    out = RL.lint("Forbes ran in behind, movement tracked all match "
+                  "[A — run_type consistent across 11].", GATES)
+    assert out == [], out
+
+
+def test_the_same_grade_on_a_DOWNGRADED_family_is_still_caught():
+    out = RL.lint("Tilbury's pressing was relentless "
+                  "[A — consistent across 11 phases].", GATES)
+    assert "a_grade_on_downgraded_family" in _checks(out)
+    detail = out[0]["detail"]
+    assert "pressing" in detail
+    assert "caps this at [B]" in detail
+
+
+def test_the_family_is_found_in_the_prose_when_the_bracket_omits_it():
+    """"[A - consistent across the match]" names no family. What it is about
+    is in the sentence beside it."""
+    out = RL.lint("Their defensive line sat deep throughout "
+                  "[A — consistent across the match].", GATES)
+    assert "a_grade_on_downgraded_family" in _checks(out)
 
 
 def test_an_a_grade_on_an_allowed_family_with_a_real_reason_is_left_alone():
@@ -416,3 +442,25 @@ def test_an_unmonitored_field_still_matches_without_a_subject():
         "values": {"77.0": 19}}}}
     assert "value_from_unmeasured_field" in _checks(
         RL.lint("The figure was 77% across the match.", GATES, variance))
+
+
+def test_the_family_search_is_bounded_at_the_sentence():
+    """A 400-character window was tried and was worse than flagging
+    everything: it dragged family words in from neighbouring sentences and
+    then named them with confidence. "run-in-behind movements [A - consistent
+    across the majority of phases observed]" was reported as citing
+    player_role -- a word from the sentence before it.
+    """
+    text = ("Reid's positional role was hard to read from this source. "
+            "His run-in-behind movements continued "
+            "[A — consistent across the majority of phases observed].")
+    out = RL.lint(text, GATES)
+    assert out == [], (
+        f"a family from the previous sentence leaked into the citation: {out}")
+
+
+def test_a_family_in_the_citations_own_sentence_still_counts():
+    text = ("Reid's positional role was hard to read from this source. "
+            "His positioning held deep throughout "
+            "[A — consistent across the match].")
+    assert "a_grade_on_downgraded_family" in _checks(RL.lint(text, GATES))

@@ -171,21 +171,44 @@ def lint(report_text: str, gates: dict = None,
             # A citation that already failed the contradiction check does not
             # need a second, vaguer finding against it. One defect, one line.
             continue
-        fams = [f for f in families_in(g["reason"]) if f in downgraded]
         line = report_text[:g["pos"]].count("\n") + 1
+        # Look for the family in the citation's OWN sentence, not only inside
+        # the bracket -- "[A - consistent across the match]" names no family,
+        # and what it is about sits in the prose beside it.
+        #
+        # A fixed 400-character window was tried and was worse than flagging
+        # everything: it dragged family words in from neighbouring sentences
+        # and then named them with confidence. "run-in-behind movements
+        # [A - consistent across the majority of phases observed]" was
+        # reported as citing player_role, a word from the sentence before it.
+        # Bound at the sentence, so the family has to be in the claim.
+        head = report_text[max(0, g["pos"] - 600):g["pos"]]
+        cut  = max(head.rfind(". "), head.rfind("\n"), head.rfind("**"))
+        context = head[cut + 1:] if cut >= 0 else head
+        fams = [f for f in set(families_in(g["reason"]) + families_in(context))
+                if f in downgraded]
+
         if fams:
+            note = ("graded [A] citing %s, which this source downgrades"
+                    % ", ".join(sorted(fams)))
+            if re.search(CONSISTENCY_AS_GRADE, g["reason"], re.I):
+                note += (". Consistency is the count axis; the observability "
+                         "axis caps this at [B]")
             findings.append({
                 "check": "a_grade_on_downgraded_family", "severity": "high",
-                "line": line, "quote": g["reason"][:100],
-                "detail": "graded [A] citing %s, which this source downgrades"
-                          % ", ".join(fams)})
-        elif re.search(CONSISTENCY_AS_GRADE, g["reason"], re.I):
-            findings.append({
-                "check": "a_grade_justified_by_consistency", "severity": "high",
-                "line": line, "quote": g["reason"][:100],
-                "detail": "graded [A] because a value was consistent. "
-                          "Consistency shows a field did not move, not that "
-                          "it was observed -- see the two-axis rule"})
+                "line": line, "quote": g["reason"][:100], "detail": note})
+
+        # An [A] justified by consistency on an ALLOWED family is correct:
+        # count axis consistent, observability axis allowed, lower of the two
+        # is [A]. The first version flagged every one of them and produced
+        # three false positives in a single report -- "run-in-behind
+        # movements [A - consistent across the majority of phases observed]"
+        # is player_movement, which this source allows. A checker that
+        # queries correct work is how a checker gets ignored, so the
+        # consistency heuristic no longer fires on its own. The
+        # self-contradicting citations it was written for are caught by
+        # citation_contradicts_its_own_grade, which does not need to know
+        # the family.
 
     # 2. Measurement language about a family that was downgraded.
     for line_no, sentence in _sentences(report_text):

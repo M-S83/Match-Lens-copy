@@ -243,3 +243,46 @@ def test_an_unaudited_metric_is_left_alone(tmp_path):
     md = _match(tmp_path, [])
     m = apply([{"metric_name": "brand_new_thing", "value": {"n": 5}}], md)[0]
     assert m["value"] == {"n": 5}
+
+
+def test_a_reason_quotes_this_matchs_sample_size_not_another(tmp_path):
+    """The reason for build_up_effectiveness hardcoded 429 -- Gorleston's
+    count. Audited against Leverkusen, which logged 445, the tool stated
+    another match's number as a fact about the one in front of it.
+    """
+    from metric_audit import audit
+
+    src = [{"metric_name": "build_up_effectiveness_score",
+            "supporting_result_families": ["build_up"],
+            "result_family_status": "allowed",
+            "value": {"total_sequences": 445, "final_third_rate_pct": 30.0}}]
+    row = [r for r in audit(_match(tmp_path, src))["rows"]
+           if r["metric"] == "build_up_effectiveness_score"][0]
+
+    assert "445" in row["note"]
+    assert "429" not in row["note"], "another match's count leaked into the reason"
+
+
+def test_a_reason_without_a_sample_size_still_reads(tmp_path):
+    from metric_audit import audit
+
+    src = [{"metric_name": "pattern_reliability_score",
+            "supporting_result_families": ["build_up"],
+            "result_family_status": "allowed",
+            "value": {"top_route": "own third -> midfield", "score": 0.4}}]
+    row = [r for r in audit(_match(tmp_path, src))["rows"]
+           if r["metric"] == "pattern_reliability_score"][0]
+    assert "{n}" not in row["note"]
+    assert "the logged total" in row["note"]
+
+
+def test_a_reason_with_no_placeholder_is_untouched(tmp_path):
+    from metric_audit import audit
+
+    src = [{"metric_name": "width_usage_score",
+            "supporting_result_families": ["spacing"],
+            "result_family_status": "allowed",
+            "value": {"score": 0.2, "method": "zone_labels"}}]
+    row = [r for r in audit(_match(tmp_path, src))["rows"]
+           if r["metric"] == "width_usage_score"][0]
+    assert "far touchline" in row["note"]

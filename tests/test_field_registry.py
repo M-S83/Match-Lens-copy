@@ -228,6 +228,8 @@ def test_realistic_possession_is_not_flagged():
 
 
 def test_one_alternating_window_among_many_is_not_enough():
+    """One is below MIN_ALTERNATING_WINDOWS -- a floor against tiny samples,
+    not a claim that one is innocent. Chance would produce 0.03 of them."""
     alt  = ["home_kit", "away_kit"] * 5
     runs = ["home_kit", "home_kit", "away_kit", "away_kit",
             "home_kit", "away_kit", "away_kit", "home_kit"]
@@ -236,6 +238,48 @@ def test_one_alternating_window_among_many_is_not_enough():
     res = FV.check_team_attribution(sequences=_seqs(per))
     assert res["verdict"] == FV.MEASURED
     assert res["windows_alternating"] == 1
+
+
+def test_a_share_below_ninety_percent_is_still_an_artefact():
+    """The case the old share test let through.
+
+    Leverkusen v Dortmund alternated in 17 of 21 windows -- 81%, under the
+    90% threshold -- so possession published. Chance would produce 0.0001
+    alternating windows in that match. A share test asks what fraction
+    alternate; the right question is whether alternation happened at all.
+    """
+    alt  = ["home_kit", "away_kit"] * 5
+    runs = ["home_kit", "home_kit", "away_kit", "away_kit",
+            "home_kit", "away_kit", "away_kit", "home_kit"]
+    per = {f"w{i}": list(alt) for i in range(17)}
+    per.update({f"x{i}": list(runs) for i in range(4)})
+    res = FV.check_team_attribution(sequences=_seqs(per))
+    assert res["verdict"] == FV.CONSTRUCTED, (
+        f"17 of 21 alternating passed as measured; share was "
+        f"{res['share']:.0%}")
+    assert res["windows_alternating"] > 100 * res["expected_by_chance"], (
+        "the verdict must rest on how far the count is from chance, not on "
+        "an absolute number that depends on how long the windows are")
+
+
+def test_the_chance_expectation_is_reported():
+    """The number that makes the verdict checkable by a reader."""
+    alt = ["home_kit", "away_kit"] * 5
+    res = FV.check_team_attribution(
+        sequences=_seqs({f"w{i}": list(alt) for i in range(21)}))
+    assert 0 < res["expected_by_chance"] < 1
+    assert res["windows_alternating"] == 21
+    assert "chance alone would produce" in res["reason"]
+
+
+def test_short_windows_make_alternation_cheaper_and_the_test_knows_it():
+    """Six sequences alternate by chance far more often than twenty do.
+    A share test cannot see that difference; the null can."""
+    short = ["home_kit", "away_kit"] * 3          # n=6, P(alt) = 0.031
+    res = FV.check_team_attribution(
+        sequences=_seqs({f"w{i}": list(short) for i in range(60)}))
+    assert res["expected_by_chance"] > 1.0, (
+        "with 60 short windows chance really does produce alternating ones")
 
 
 def test_short_windows_do_not_count_towards_the_verdict():

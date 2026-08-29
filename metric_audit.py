@@ -54,17 +54,29 @@ UNKNOWABLE_DENOMINATOR = {
         "denominator is sequences the agent classified, not sequences "
         "played; a ball-following crop under-samples the far touchline, "
         "which is where width lives"),
+    # {n} is filled with THIS match's sample size. The first version wrote
+    # "429 is the number of sequences the agent LOGGED" -- Gorleston's count,
+    # hardcoded into a generic reason. Audited against Leverkusen, which
+    # logged 445, the tool stated another match's number as a fact about the
+    # one in front of it.
     "build_up_effectiveness_score": (
-        "429 is the number of sequences the agent LOGGED, not the number "
-        "played. A ball-following crop samples the ball's neighbourhood, so "
-        "the total is a sample of unknown size and a percentage of it "
-        "describes the sample rather than the team. The duel section of the "
-        "same report refuses rates for exactly this reason"),
+        "{n} is the number of sequences the agent LOGGED, not the number "
+        "played. The camera samples the ball's neighbourhood, so the total "
+        "is a sample of unknown size and a percentage of it describes the "
+        "sample rather than the team. The duel section of the same report "
+        "refuses rates for exactly this reason"),
     "pattern_reliability_score": (
-        "same denominator as build-up effectiveness -- sequences logged, not "
-        "played -- and the route labels come from a three-zone encoding, so "
-        "a dominant-route share measures the encoding as much as the play"),
+        "same denominator as build-up effectiveness -- {n} sequences logged, "
+        "not played -- and the route labels come from a three-zone encoding, "
+        "so a dominant-route share measures the encoding as much as the play"),
 }
+
+
+def _fill(note, n):
+    """Put this match's sample size into a reason that asks for it."""
+    if "{n}" not in note:
+        return note
+    return note.replace("{n}", str(n) if n is not None else "the logged total")
 
 
 def _has_rate(value) -> bool:
@@ -122,7 +134,7 @@ def audit(match_dir):
             note = f"underlying field never varied ({fam})"
         elif name in UNKNOWABLE_DENOMINATOR:
             verdict = "counts_only"
-            note = UNKNOWABLE_DENOMINATOR[name]
+            note = _fill(UNKNOWABLE_DENOMINATOR[name], n)
         elif n is not None and n < MIN_N_FOR_RATE:
             verdict = "withhold"
             note = f"n={n}: one event moves this by {100/max(n,1):.0f} points"

@@ -333,10 +333,31 @@ def classify(values, min_windows: int = MIN_WINDOWS,
 ALTERNATION_MIN_SEQS    = 6
 # ...and this many such windows before the match-level share means anything.
 ALTERNATION_MIN_WINDOWS = 5
-# Share of qualifying windows that must alternate strictly before the label is
-# called constructed. Real possession does not alternate: a team wins the ball
-# back and keeps it, so consecutive same-team sequences are the normal case.
-ALTERNATION_SHARE       = 0.9
+# How many strictly-alternating windows are needed before the label is called
+# constructed, and by what factor they must exceed chance.
+#
+# The first version of this used a share: 90% of windows had to alternate.
+# That was the wrong shape of test, and running it across nine matches showed
+# why. Under a fair-coin null -- each sequence's team an independent flip --
+# the EXPECTED number of strictly-alternating windows in a whole match is
+# 0.0001 to 0.002. It cannot happen even once by chance, so asking what
+# fraction of windows alternate is asking the wrong question.
+#
+#   match                              alternating / checked   expected
+#   2024-07-25 leverkusen v dortmund        17 / 21             0.0001
+#   2025-11-16 cheshunt v stevenage         61 / 62             0.0004
+#   2026-04-06 felixstowe v lowestoft       20 / 20             0.0002
+#   2026-04-11 gorleston v tilbury          21 / 21             0.0005
+#   _freshrun_billericay                    65 / 90             0.0020
+#   netherlands v sweden M35                61 / 64             0.0002
+#
+# The share test passed leverkusen (81%) and billericay (72%) as measured,
+# publishing a possession split from a label that is off the null by four
+# orders of magnitude. Comparing against chance catches both, needs no magic
+# fraction, and stays correct on a match of short windows where alternation
+# genuinely is more likely.
+MIN_ALTERNATING_WINDOWS   = 3
+ALTERNATION_CHANCE_FACTOR = 10
 
 
 def check_team_attribution(match_dir: str = "", sequences: list = None) -> dict:
@@ -374,11 +395,16 @@ def check_team_attribution(match_dir: str = "", sequences: list = None) -> dict:
             by_window.setdefault(s.get("window"), []).append(s.get("team"))
 
     checked = alternating = 0
+    expected = 0.0
     for teams in by_window.values():
         teams = [t for t in teams if t is not None]
         if len(teams) < ALTERNATION_MIN_SEQS:
             continue
         checked += 1
+        # P(strict alternation) for n independent fair labels is 2 * 2^-n.
+        # Summed over windows this is the number of alternating windows
+        # chance alone would produce.
+        expected += 2.0 ** (1 - len(teams))
         if all(teams[i] != teams[i + 1] for i in range(len(teams) - 1)):
             alternating += 1
 
@@ -389,21 +415,24 @@ def check_team_attribution(match_dir: str = "", sequences: list = None) -> dict:
                 "reason": "too few windows carry %d+ attributed sequences to "
                           "judge the ordering" % ALTERNATION_MIN_SEQS}
 
-    share   = alternating / checked
-    strict  = share >= ALTERNATION_SHARE
+    share  = alternating / checked
+    strict = (alternating >= MIN_ALTERNATING_WINDOWS
+              and alternating > ALTERNATION_CHANCE_FACTOR * expected)
     return {
         "verdict":            CONSTRUCTED if strict else MEASURED,
         "windows_checked":    checked,
         "windows_alternating": alternating,
+        "expected_by_chance": round(expected, 4),
         "share":              round(share, 3),
         "sequences":          len(sequences),
-        "reason": ("team label alternates strictly in %d of %d windows (%.0f%%); "
-                   "the possession split follows from that alternation, not "
-                   "from the frames" % (alternating, checked, share * 100))
+        "reason": ("team label alternates strictly in %d of %d windows; chance "
+                   "alone would produce %.4f. The possession split follows "
+                   "from that alternation, not from the frames"
+                   % (alternating, checked, expected))
                   if strict else
-                  ("team label alternates strictly in %d of %d windows (%.0f%%), "
-                   "below the %.0f%% artefact threshold"
-                   % (alternating, checked, share * 100, ALTERNATION_SHARE * 100)),
+                  ("team label alternates strictly in %d of %d windows against "
+                   "%.4f expected by chance -- not enough to call it an "
+                   "artefact" % (alternating, checked, expected)),
     }
 
 

@@ -183,3 +183,40 @@ def test_the_sweep_would_catch_a_regression(monkeypatch):
                         lambda passes: (0.0, 0, ["suggestive"], "none"))
     with pytest.raises(AssertionError):
         test_no_metric_returns_a_number_when_given_nothing()
+
+
+def test_the_withheld_summary_does_not_narrate_the_absence():
+    """What the writer is handed decides what it writes.
+
+    The first withheld wording read "no defensive line shifts were recorded
+    in any window; rest defence is not reportable from this source". The
+    writer quoted the first clause and dropped the second, and the report
+    said "Rest defence: No backward defensive line shifts were observed in
+    the data" -- true, and still an invitation to read a stable back line
+    into it.
+
+    Handing over a sentence and hoping only half of it is used is the same
+    mistake as handing over a number and asking for it to be ignored.
+    """
+    import re
+    src = inspect.getsource(D)
+    withheld = re.search(
+        r'"rest defence is not reportable from this source"', src)
+    assert withheld, "the withheld summary wording has changed"
+
+    # The observation count must not be in the sentence the writer quotes.
+    summary_block = src[src.index('"summary": (f"{backward_per_win}'):]
+    summary_block = summary_block[:summary_block.index('"basis"')]
+    for phrase in ("no defensive line shifts were recorded",
+                   "were observed", "shifts were"):
+        assert phrase not in summary_block, (
+            f"the withheld summary still narrates the absence: {phrase!r}")
+
+
+def test_the_reason_is_available_but_out_of_the_quotable_sentence():
+    """It still has to be explainable -- just not in the line that reads
+    like a finding."""
+    import re
+    src = inspect.getsource(D)
+    assert re.search(r'"basis":.*?ball-following camera cannot see',
+                     src, re.S), "the explanation was dropped entirely"

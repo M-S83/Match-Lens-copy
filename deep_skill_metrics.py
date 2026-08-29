@@ -2447,10 +2447,22 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
         {"avg_backward_shifts_per_window": backward_per_win,
          "category": rest_cat,
          "shifts_observed": backward_per_win is not None,
+         # The withheld wording used to read "no defensive line shifts were
+         # recorded in any window; rest defence is not reportable from this
+         # source". The writer quoted the first clause and dropped the
+         # second, and the report said "Rest defence: No backward defensive
+         # line shifts were observed in the data" -- true, and still an
+         # invitation to read a stable back line into it.
+         #
+         # On a downgraded family the absence is the camera. So the string
+         # says only that, and the count that produced it goes in a separate
+         # key the prose has no reason to quote.
          "summary": (f"{backward_per_win} avg backward line shifts ({rest_cat})"
                      if backward_per_win is not None else
-                     "no defensive line shifts were recorded in any window; "
-                     "rest defence is not reportable from this source")},
+                     "rest defence is not reportable from this source"),
+         "basis": (None if backward_per_win is not None else
+                   "a ball-following camera cannot see far-side line "
+                   "movement, so nothing was recorded to average")},
         "profile", t, 0.75, w,
         "Average defensive line shifts per possession phase with categorical label",
         traceable_to=["line_height_by_window"]))

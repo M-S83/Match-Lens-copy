@@ -70,13 +70,17 @@ def build_readiness_check(match_dir: str) -> bool:
         blocking.append(f"Windows incomplete: {complete}/{planned}")
 
     # -- Ground truth ----------------------------------------------------------
-    # Source-aware relaxation: broadcast_fixed_wide event agents only run on
-    # confirmed goal windows by design, so subs (and other non-goal events)
-    # are expected to read as "missed" at 1fps. The realistic steady-state for
-    # broadcast is "all subs missed, possibly a goal or two too" -- often
-    # ~100% of events_checked. Block only if events_checked == 0 (deep scan
-    # never ran or file missing) -- a genuine pipeline failure shows 0 checks,
-    # not 10 checks with 10 misses. Veo runs keep the strict gate.
+    # A missed event never blocks, on any source type. The reasoning is in
+    # the block below and it is source-independent: at 1fps a ball-following
+    # camera misses touchline events whether it is Veo or broadcast.
+    #
+    # This comment previously ended "Veo runs keep the strict gate", which
+    # described the earlier source_type_early == "broadcast_fixed_wide"
+    # branch. The code was corrected and the header was not, so it spent a
+    # while asserting a gate that had already been removed, directly above
+    # the code that does not implement it.
+    #
+    # The one blocking case is events_checked == 0: the check did not run.
     gt_total  = (ground_truth or {}).get("total",
                   (ground_truth or {}).get("events_checked", 0))
     gt_missed = (ground_truth or {}).get("missed", "file missing")

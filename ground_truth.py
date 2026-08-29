@@ -5,13 +5,36 @@ Validates known match events against what the analysis pipeline found.
 Reads KEY EVENTS from match_config.json and checks each one appears in
 running_summary.json key_moments with confirmed consensus.
 
-Events not found trigger a mandatory deep scan re-run before Step 4.
+Three things are measured here and they must not be conflated.
+
+  missed   -- the footage did not show a known event. Goals, cards and
+              substitutions come from match_config, entered from the
+              official fixture record; they are facts already, not claims
+              needing visual proof. On a ball-following camera at 1fps the
+              answer to "did the footage also show it" is often no, by
+              design. This measures the FOOTAGE. A deep scan re-run reads
+              the same frames and returns the same answer.
+
+  partial  -- the footage did show the event and the analysis could not
+              reach confirmed consensus on it. This measures the ANALYSIS,
+              and a deep scan re-run can change it.
+
+  unscored -- an agent-detected moment matched, so the footage did show it,
+              but no consensus was recorded. Not partial consensus -- no
+              consensus. Counted as corroborated, because that asks what the
+              camera saw; not sent for re-run, because a re-scan cannot
+              write a field the merge omitted.
+
+Only partial consensus populates rerun_required. pipeline_ready reports
+whether the check could run and whether anything analysis-side is
+outstanding -- never whether the camera happened to be pointing the right
+way. build_readiness_check applies the same split.
 
 Usage:
     from ground_truth import build_ground_truth_check
 
     result = build_ground_truth_check(MATCH_DIR)
-    if result["missed"] > 0:
+    if result["rerun_required"]:
         print("Re-run deep scan for:", result["rerun_required"])
 """
 
@@ -280,7 +303,7 @@ def build_ground_truth_check(match_dir: str) -> dict:
         win_id       = event_window_id(event_secs, windows) if event_secs else None
 
         if found_moment:
-            consensus = found_moment.get("consensus", "unknown")
+            consensus = found_moment.get("consensus")
             if consensus == "confirmed":
                 status = "confirmed"
             elif "partial" in str(consensus):
@@ -290,12 +313,24 @@ def build_ground_truth_check(match_dir: str) -> dict:
                     f"(partial consensus: {consensus})"
                 )
             else:
-                status = "partial"
+                # An agent-detected moment matched, so the footage showed the
+                # event -- but no consensus was recorded for it. That is not
+                # partial consensus, it is no consensus, and calling it
+                # partial reports a level the merge never wrote.
+                #
+                # It counts as corroborated, because corroboration asks what
+                # the camera saw and not how confidently the analysis scored
+                # it. It does not demand a deep scan re-run: a re-run cannot
+                # supply a field the merge failed to write.
+                status = "unscored"
         else:
+            # Deliberately not added to rerun_needed. Two reasons. A re-scan
+            # of frames that do not contain the event costs the same and
+            # returns the same answer. And synthesis_agent loads this file
+            # into report context, so an entry reading "NOT FOUND in
+            # key_moments" is handed to a writer as something citable --
+            # absence of footage read as evidence of a finding.
             status = "missed"
-            rerun_needed.append(
-                f"agent_{win_id} -- {event['description']} NOT FOUND in key_moments"
-            )
 
         results.append({
             "event":            event["description"],
@@ -311,15 +346,32 @@ def build_ground_truth_check(match_dir: str) -> dict:
     # -- Build counts ----------------------------------------------------------
     confirmed = sum(1 for r in results if r["status"] == "confirmed")
     partial   = sum(1 for r in results if r["status"] == "partial")
+    unscored  = sum(1 for r in results if r["status"] == "unscored")
     missed    = sum(1 for r in results if r["status"] == "missed")
+
+    checked      = len(results)
+    # The footage showed the event in all three of these states. They differ
+    # only in what the analysis recorded about it. The denominator here is
+    # real -- every known event is checked -- so unlike a rate over an
+    # unknowable base this one is publishable.
+    corroborated = confirmed + partial + unscored
 
     output = {
         "match":           config.get("match", ""),
-        "events_checked":  len(results),
+        "events_checked":  checked,
         "confirmed":       confirmed,
         "partial":         partial,
+        # Matched in footage, no consensus recorded. Kept distinct from
+        # partial so the file never claims a consensus level that was
+        # never written.
+        "unscored":        unscored,
         "missed":          missed,
-        "pipeline_ready":  missed == 0,
+        "corroborated":    corroborated,
+        # False only when the check could not run (no events, missing inputs
+        # -- a genuine pipeline failure) or when an analysis-side item is
+        # outstanding. A missed event never enters this.
+        "pipeline_ready":  checked > 0 and not rerun_needed,
+        "check_ran":       checked > 0,
         "results":         results,
         "rerun_required":  rerun_needed,
         "generated_at":    datetime.now().isoformat(),
@@ -334,24 +386,50 @@ def build_ground_truth_check(match_dir: str) -> dict:
     print(f"\n{'-'*55}")
     print(f"  Ground Truth Validation")
     print(f"{'-'*55}")
-    print(f"  Events checked: {len(results)}")
+    print(f"  Events checked: {checked}")
     print(f"  Confirmed:      {confirmed}")
     print(f"  Partial:        {partial}")
+    print(f"  Unscored:       {unscored}")
     print(f"  Missed:         {missed}")
 
+    # An unscored event was seen by the camera. Giving it the missed icon
+    # would read as absent footage, which is the opposite of what it means.
+    _ICONS = {"confirmed": "[OK]", "partial": "[ ]",
+              "unscored": "[~]", "missed": "[X]"}
     for r in results:
-        icon = "[OK]" if r["status"] == "confirmed" else ("[ ]" if r["status"] == "partial" else "[X]")
-        print(f"  {icon} {r['event'][:55]:<55} [{r['status']}]")
+        print(f"  {_ICONS.get(r['status'], '[?]')} "
+              f"{r['event'][:55]:<55} [{r['status']}]")
 
+    # Analysis-side only. Every entry here is an event the footage DID show
+    # that the analysis could not confirm, which a re-run can actually move.
     if rerun_needed:
-        print(f"\n  [!]  Deep scan re-runs required:")
+        print(f"\n  [!]  Deep scan re-runs required "
+              f"(footage showed these; consensus was partial):")
         for r in rerun_needed:
             print(f"     - {r}")
 
-    if missed == 0:
-        print(f"\n  [OK] All events accounted for -- pipeline may proceed to Step 4")
+    if unscored:
+        print(f"\n  [~]  {unscored} event(s) matched in footage with no "
+              f"consensus recorded. A deep scan re-run cannot supply a "
+              f"field the merge did not write -- look upstream.")
+
+    # Footage coverage, reported without a verdict. This previously read
+    # "[FAIL] N event(s) missed -- resolve before Step 4", after which Step 4
+    # ran.
+    if checked == 0:
+        print(f"\n  [FAIL] No events were checked -- match_config carries no "
+              f"known events, or the inputs are missing. This blocks the "
+              f"build: it means the check did not run, not that the footage "
+              f"was thin.")
+    elif missed == 0:
+        print(f"\n  [OK] Footage corroborated all {checked} known event(s).")
     else:
-        print(f"\n  [FAIL] {missed} event(s) missed -- resolve before Step 4")
+        print(f"\n  [INFO] Footage corroborated {corroborated}/{checked} "
+              f"known event(s). Operator facts remain authoritative -- this "
+              f"measures what the camera saw, not the analysis.")
+        if corroborated == 0:
+            print(f"         Nothing was corroborated, which is worth a look "
+                  f"at the source before trusting event timing.")
 
     print(f"{'-'*55}")
 

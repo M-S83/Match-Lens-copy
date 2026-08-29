@@ -57,3 +57,9 @@ _to_delete/
 # Local-CV working output, regenerable from the match directory
 label_set/
 team_debug/
+
+# One-shot patch scripts. Each applies a single change set with anchored
+# dry-run edits and is spent once run -- the change itself is the commit,
+# and a stale apply_*.py in the tree invites re-running it against an
+# already-patched file.
+apply_*.py

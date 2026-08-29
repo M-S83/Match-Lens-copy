@@ -281,6 +281,7 @@ def validate_set_piece(sp: dict, window_id) -> tuple:
 
 
 _MMSS = re.compile(r"^(\d+)m(\d+)s$")
+_FRAME_TIME = re.compile(r"^frame_(\d+)m(\d+)s\.jpg$", re.I)
 _PLAN_CACHE = {}
 
 
@@ -363,6 +364,21 @@ def _validate_observation_times(observations, window_id, timestamp_range,
     asking for a judgement that can be a copy: name the frame, and derive
     the time from the filename here.
     """
+    # The schema no longer asks for a timestamp. It asks which frame the
+    # observation came from, and every frame is named with its time
+    # (frame_00m00s.jpg ... frame_121m19s.jpg), so the clock is read here
+    # rather than judged there. An agent that names a real frame gets a
+    # correct timestamp by construction; one that invents a filename still
+    # has to pass the window check below.
+    for obs in observations or []:
+        if obs.get("timestamp"):
+            continue
+        frames = obs.get("frames") or []
+        stem = _FRAME_TIME.match(str(frames[0])) if frames else None
+        if stem:
+            obs["timestamp"] = "%sm%ss" % (stem.group(1), stem.group(2))
+            obs["timestamp_source"] = "frame_filename"
+
     bounds = _window_bounds(timestamp_range)
     if not bounds or not observations:
         return

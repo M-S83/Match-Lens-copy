@@ -1968,9 +1968,16 @@ Return JSON only. No prose. No preamble. No markdown fences.
                            defending_third / middle / attacking_third / box]",
       "game_phase":       "[in_possession / out_of_possession / transition / set_piece]",
       "frequency":        "[single / repeated / consistent]",
-      "timestamp":        "[MMmSSs]",
       "confidence":       "[high / medium / low]",
-      "frames":           ["frame_XXmYYs.jpg"],
+      "frames":           ["REQUIRED. Copy the filenames of the frames you are
+                           describing, character for character, from the list you
+                           were given. Do NOT construct a filename and do NOT
+                           work out a time: every frame you were shown is named
+                           with its time, so naming the frame IS naming the
+                           moment, and the pipeline reads the clock off the
+                           filename. If you cannot point at a specific frame,
+                           leave frames empty -- the observation is still
+                           wanted, only the moment is unknown."],
       "preferred_foot":   "[right / left / both / unknown]",
       "physical_profile": {
         "height_impression": "[tall / average / short / unknown]",

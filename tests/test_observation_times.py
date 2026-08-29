@@ -241,3 +241,106 @@ def test_without_plan_bounds_only_the_kickoff_clock_applies():
     _validate_observation_times(obs, "w03", KICKOFF_RANGE, summary, None)
     assert obs[0]["timestamp"] is None
     assert "video" not in obs[0]["timestamp_note"]
+
+
+# ── naming the frame instead of judging the time ──────────────────────────
+#
+# The schema no longer asks for a timestamp. It asks which frame the
+# observation came from, and every frame is named with its time
+# (frame_00m00s.jpg ... frame_121m19s.jpg), so the clock is read in code
+# rather than judged by the agent. Same shape as everything else that has
+# worked here: make it a copy, not a judgement.
+
+def test_the_time_is_read_off_the_frame_the_agent_named():
+    obs = [{"player": "A", "frames": ["frame_16m30s.jpg"]}]
+    summary = {}
+    _validate_observation_times(obs, "w03", "10:00-15:00", summary, (950, 1250))
+    assert obs[0]["timestamp"] == "16m30s"
+    assert obs[0]["timestamp_source"] == "frame_filename"
+    assert obs[0]["timestamp_clock"] == "video"
+
+
+def test_naming_a_frame_from_elsewhere_is_still_caught():
+    """Deriving from the filename does not make an invented filename true."""
+    obs = [{"player": "B", "frames": ["frame_02m00s.jpg"]}]
+    _validate_observation_times(obs, "w03", "10:00-15:00", {}, (950, 1250))
+    assert obs[0]["timestamp"] is None
+    assert obs[0]["frames_rejected"] == ["frame_02m00s.jpg"]
+
+
+def test_no_frame_means_no_time_and_no_complaint():
+    """"I cannot point at a frame" is the honest answer the schema now asks
+    for, and it must not be counted as a rejection."""
+    obs = [{"player": "C", "observation": "drops deep", "frames": []}]
+    summary = {}
+    _validate_observation_times(obs, "w03", "10:00-15:00", summary, (950, 1250))
+    assert obs[0].get("timestamp") is None
+    assert "timestamp_rejected" not in obs[0]
+    assert "observation_time_rejects" not in summary
+    assert obs[0]["observation"] == "drops deep"
+
+
+def test_an_agent_supplied_timestamp_is_not_overwritten():
+    """Older windows still carry one. Deriving over the top would hide what
+    the agent actually said."""
+    obs = [{"player": "D", "timestamp": "12m30s",
+            "frames": ["frame_99m00s.jpg"]}]
+    _validate_observation_times(obs, "w03", "10:00-15:00", {}, (950, 1250))
+    assert obs[0]["timestamp"] == "12m30s"
+    assert "timestamp_source" not in obs[0]
+
+
+def test_a_filename_that_is_not_a_frame_is_ignored():
+    for junk in ("thumbnail.png", "frame_XXmYYs.jpg", "", "frame_12m.jpg"):
+        obs = [{"player": "E", "frames": [junk]}]
+        _validate_observation_times(obs, "w03", "10:00-15:00", {}, (950, 1250))
+        assert obs[0].get("timestamp") is None, junk
+        assert "timestamp_source" not in obs[0]
+
+
+def test_the_schema_no_longer_asks_for_a_player_timestamp():
+    """The field is removed, not forbidden. A rule telling an agent to leave
+    a field blank has never held in this project; an absent field cannot be
+    filled in."""
+    import io
+    import os
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    skill = io.open(os.path.join(repo, "SKILL.md"), encoding="utf-8").read()
+
+    i = skill.find('"individual_observations": [\n    {\n      "player"')
+    assert i > 0, "player observation schema not found"
+    # Bound the block at the next schema. duels[] legitimately has a
+    # timestamp of its own, and a fixed-size window runs into it.
+    j = skill.find('"duels"', i)
+    assert j > i, "could not find the end of the observation schema"
+    block = skill[i:j]
+    assert '"timestamp"' not in block, (
+        "the player observation schema still asks for a timestamp")
+    # Assert on phrases that survive the schema's line wrapping.
+    assert "Do NOT construct a filename" in block
+    assert "leave frames empty" in block
+
+
+# ── rerunning the player agents alone ─────────────────────────────────────
+
+def test_force_player_resets_3b_but_not_3a():
+    """The only way to rerun the player agents used to be --force-structural,
+    which resets 3a as well. 3a is the expensive half and a player-schema
+    change does not touch it, so the two are now separable.
+    """
+    import ast
+    import io as _io
+    import os as _os
+    repo = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = _io.open(_os.path.join(repo, "pipeline_runner_v2.py"),
+                   encoding="utf-8").read()
+    ast.parse(src)                       # the edit must not break the runner
+
+    assert '"--force-player"' in src
+    block = src[src.index("if args.force_player"):]
+    block = block[:block.index("if args.force_structural")]
+    assert '["3b"] = "pending"' in block
+    assert '"3a"' not in block, (
+        "--force-player reset the structural windows too, which is the cost "
+        "it exists to avoid")
+    assert '"3l_synthesis"' in block, "downstream steps must rerun as well"

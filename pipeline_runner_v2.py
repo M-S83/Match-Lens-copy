@@ -3424,6 +3424,10 @@ if __name__ == "__main__":
     parser.add_argument("--force-structural", action="store_true",
                         help="Reset all 3a structural windows to pending and rerun "
                              "(also resets 3b and 3e downstream)")
+    parser.add_argument("--force-player", action="store_true",
+                        help="Reset only the 3b player windows and rerun them, "
+                             "keeping the 3a structural results already paid "
+                             "for. Use after a change to the player schema.")
     parser.add_argument("--estimate-only", action="store_true",
                         help="Show cost estimate and exit")
     parser.add_argument("--force-reports", action="store_true",
@@ -3456,7 +3460,8 @@ if __name__ == "__main__":
                   "structural + downstream for blind rerun.")
             args.force_structural = True
 
-    if args.force_reports or args.force_merge or args.force_structural:
+    if (args.force_reports or args.force_merge or args.force_structural
+            or args.force_player):
         state = load_state(args.match_dir)
         if not state:
             print("No pipeline state found. Run without --force-reports first.")
@@ -3488,6 +3493,24 @@ if __name__ == "__main__":
             from pipeline_state import _save as _ps_save
             _ps_save(args.match_dir, state)
             print("  State reset for merge + reports. Re-running...")
+        if args.force_player and not args.force_structural:
+            # 3a is expensive and unaffected by a player-schema change, so it
+            # is left alone. --force-structural resets both and costs roughly
+            # twice as much; this exists because the only way to rerun the
+            # player agents used to be to rerun the structural ones too.
+            for wid in state.get("windows", {}):
+                state["windows"][wid]["3b"] = "pending"
+            for step in ["3e_merge","3e_zone_normalise",
+                         "3f_shots","3f_sequences","3g_summary",
+                         "3h_ground_truth","3i_escalation",
+                         "3i_player_escalation","3j_readiness",
+                         "3k_metrics","3k2_player_cards","3l_synthesis",
+                         "4a_tactical_report","4b_opposition_report"]:
+                state["steps"][step] = "pending"
+            from pipeline_state import _save as _ps_save_p
+            _ps_save_p(args.match_dir, state)
+            print("  3b player windows reset; 3a structural results kept. "
+                  "Re-running...")
         if args.force_structural:
             # state["windows"] holds exactly the plan's windows -- burst ids
             # live in state["bursts"] and reconcile_with_plan() moved any

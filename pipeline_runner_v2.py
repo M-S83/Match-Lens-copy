@@ -3443,6 +3443,37 @@ if __name__ == "__main__":
 
     if args.estimate_only:
         md  = load_match_data(args.match_dir)
+        # With a --force flag, the question is what THIS run costs, not what
+        # the whole match would. The full table quoted 3a_structural at $1.64
+        # for a --force-player run that does not touch 3a -- the same
+        # over-estimate estimate_remaining was written to replace, printed
+        # directly above "Check balance".
+        _forced = (args.force_structural or args.force_player
+                   or args.force_merge or args.force_reports)
+        if _forced:
+            from cost_estimator import state_after_force
+            _st = load_state(args.match_dir)
+            if _st:
+                _hypo = state_after_force(
+                    _st, force_structural=args.force_structural,
+                    force_player=args.force_player,
+                    force_merge=args.force_merge,
+                    force_reports=args.force_reports)
+                _rem = estimate_remaining(args.match_dir, md, args.quality,
+                                          state=_hypo)
+                if _rem:
+                    print(f"\n  This run would cost ${_rem['cost_usd']:.2f} "
+                          f"({_rem['api_calls']} API calls) at "
+                          f"--quality {args.quality}\n")
+                    for _k, _v in _rem["breakdown"].items():
+                        if _v["calls"]:
+                            print(f"    {_k:<22} {_v['calls']:>3} calls  "
+                                  f"${_v['cost_usd']:.2f}")
+                    for _n in _rem.get("notes", []):
+                        print(f"    note: {_n}")
+                    print("\n  Nothing has been submitted. Drop "
+                          "--estimate-only to run it.")
+                    sys.exit(0)
         est = [calculate_cost(md, q) for q in ["economy","standard","full","full_1fps"]]
         _est_ok = print_estimate(md, est)
         # Exit non-zero when no usable estimate exists, so --estimate-only

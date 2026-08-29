@@ -181,7 +181,7 @@ def calculate_cost(match_data: dict, quality: str = "standard") -> dict:
 
 
 def estimate_remaining(match_dir: str, match_data: dict,
-                       quality: str = "standard") -> dict:
+                       quality: str = "standard", state: dict = None) -> dict:
     """Cost of the work THIS run will actually do, read from pipeline_state.
 
     The full-match figure is the wrong number to print before a resumed run,
@@ -194,16 +194,24 @@ def estimate_remaining(match_dir: str, match_data: dict,
     estimate, which is worse than not having one -- the run where the number
     matters is the run they have learned to skip.
 
+    Pass `state` to price a hypothetical one -- what a run WOULD cost after
+    a --force flag resets some steps. --estimate-only used to exit before
+    those resets were applied and print the full-match table for every
+    quality profile, which is the same over-estimate this function exists to
+    replace: it quoted 3a_structural at $1.64 for a --force-player run that
+    would not touch 3a at all.
+
     Returns None when there is no state, in which case the whole match is
     genuinely still to pay for and the full figure is the right one.
     """
     import json as _json
     import os as _os
-    state_path = _os.path.join(match_dir, "pipeline_state.json")
-    if not _os.path.exists(state_path):
-        return None
-    with open(state_path, encoding="utf-8") as f:
-        state = _json.load(f)
+    if state is None:
+        state_path = _os.path.join(match_dir, "pipeline_state.json")
+        if not _os.path.exists(state_path):
+            return None
+        with open(state_path, encoding="utf-8") as f:
+            state = _json.load(f)
     windows = state.get("windows", {}) or {}
     steps   = state.get("steps", {}) or {}
     done    = {"complete", "skipped", "failed"}
@@ -255,6 +263,35 @@ def estimate_remaining(match_dir: str, match_data: dict,
                       for k, (n, c) in parts.items()},
         "notes": notes,
     }
+
+
+def state_after_force(state: dict, force_structural: bool = False,
+                      force_player: bool = False, force_merge: bool = False,
+                      force_reports: bool = False) -> dict:
+    """A copy of the state with the steps a --force flag would reset.
+
+    Kept here, beside the pricing, so --estimate-only can answer "what will
+    THIS invocation cost" without writing anything to disk. The runner does
+    the real reset; this mirrors which steps it clears.
+    """
+    import copy as _copy
+    out     = _copy.deepcopy(state or {})
+    windows = out.setdefault("windows", {})
+    steps   = out.setdefault("steps", {})
+
+    if force_structural:
+        for wid in windows:
+            windows[wid]["3a"] = "pending"
+            windows[wid]["3b"] = "pending"
+    elif force_player:
+        for wid in windows:
+            windows[wid]["3b"] = "pending"
+
+    if force_structural or force_player or force_merge:
+        steps["3e_merge"] = "pending"
+    if force_structural or force_player or force_merge or force_reports:
+        steps["3l_synthesis"] = "pending"
+    return out
 
 
 # ── Credit check ─────────────────────────────────────────────────────────────

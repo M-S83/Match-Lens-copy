@@ -281,6 +281,33 @@ def validate_set_piece(sp: dict, window_id) -> tuple:
 
 
 _MMSS = re.compile(r"^(\d+)m(\d+)s$")
+_PLAN_CACHE = {}
+
+
+def _plan_video_bounds(merged_path, agent_id):
+    """(start_s, end_s) in VIDEO seconds for this window, from window_plan."""
+    if not agent_id:
+        return None
+    match_dir = os.path.dirname(os.path.dirname(merged_path or ""))
+    if match_dir not in _PLAN_CACHE:
+        path = os.path.join(match_dir, "window_plan.json")
+        table = {}
+        try:
+            with open(path, encoding="utf-8") as fh:
+                plan = json.load(fh)
+            rows = plan.get("windows") if isinstance(plan, dict) else plan
+            if not isinstance(rows, list):
+                rows = next((v for v in (plan or {}).values()
+                             if isinstance(v, list) and v
+                             and isinstance(v[0], dict)), [])
+            for row in rows:
+                if row.get("agent_id") and row.get("start_s") is not None:
+                    table[str(row["agent_id"])] = (int(row["start_s"]),
+                                                   int(row["end_s"]))
+        except (OSError, ValueError, TypeError, StopIteration):
+            table = {}
+        _PLAN_CACHE[match_dir] = table
+    return _PLAN_CACHE[match_dir].get(str(agent_id))
 
 
 def _window_bounds(timestamp_range):
@@ -295,7 +322,7 @@ def _window_bounds(timestamp_range):
 
 
 def _validate_observation_times(observations, window_id, timestamp_range,
-                                summary):
+                                summary, video_bounds=None):
     """Null any observation timestamp that cannot belong to this window.
 
     WHAT THIS FOUND, ON THE GORLESTON MATCH
@@ -340,6 +367,24 @@ def _validate_observation_times(observations, window_id, timestamp_range,
     if not bounds or not observations:
         return
     start_s, end_s = bounds
+    # The same window carries two absolute clocks. timestamp_range is minutes
+    # since kick-off ("10:00-15:00"); window_plan gives start_s/end_s in
+    # video seconds (950-1250) and start_frame as a video filename
+    # (frame_15m50s.jpg). They differ by the kick-off offset -- 350s on this
+    # match -- for the whole game.
+    #
+    # Checking only the kick-off clock, as the first version of this did,
+    # would reject a correct video-clock reading. And the video clock is the
+    # only absolute reference the agent can actually see: it is in the name
+    # of every frame it is shown. So a value is kept if it is consistent
+    # with EITHER, and which one it matched is recorded, because a field
+    # whose clock varies window to window is not usable even when each
+    # value is individually defensible.
+    #
+    # An offset from the window start is deliberately NOT accepted. That
+    # reading would make 00m00s legitimate in every window, which is exactly
+    # what makes the 118 zeros indistinguishable from a default.
+    video = video_bounds or ()
     dropped = 0
     for obs in observations:
         m = _MMSS.match(str(obs.get("timestamp") or ""))
@@ -347,21 +392,33 @@ def _validate_observation_times(observations, window_id, timestamp_range,
             continue
         seconds = int(m.group(1)) * 60 + int(m.group(2))
         if start_s <= seconds <= end_s:
+            obs["timestamp_clock"] = "since_kickoff"
+            continue
+        if video and video[0] <= seconds <= video[1]:
+            obs["timestamp_clock"] = "video"
             continue
         obs["timestamp_rejected"] = obs["timestamp"]
         obs["timestamp"] = None
         obs["timestamp_note"] = (
-            "outside window %s (%s); no clock is defined for this field"
-            % (window_id, timestamp_range))
+            "outside window %s on either clock (since kick-off %s%s); the "
+            "schema does not say which clock this field uses"
+            % (window_id, timestamp_range,
+               ", video %d-%ds" % video if video else ""))
         # frames[0] is generated from the timestamp in 264 of 265 cases, so
         # it names footage this observation was not taken from.
         if obs.get("frames"):
             obs["frames_rejected"] = obs.pop("frames")
         dropped += 1
     if dropped:
+        clocks = {}
+        for obs in observations:
+            c = obs.get("timestamp_clock")
+            if c:
+                clocks[c] = clocks.get(c, 0) + 1
         summary.setdefault("observation_time_rejects", []).append(
             {"window": window_id, "range": timestamp_range,
-             "rejected": dropped, "of": len(observations)})
+             "rejected": dropped, "of": len(observations),
+             "kept_by_clock": clocks})
 
 
 def build_set_piece_queue_entry(sp: dict, window_id) -> dict:
@@ -707,7 +764,9 @@ def update_running_summary(merged_path: str,
     # Grade each observation as it is accumulated
     raw_obs = w.get("individual_observations", [])
     _validate_observation_times(raw_obs, w.get("window"),
-                                w.get("timestamp_range"), summary)
+                                w.get("timestamp_range"), summary,
+                                _plan_video_bounds(merged_path,
+                                                   w.get("agent_id")))
     try:
         import deep_skill_metrics as _dsm
         for obs in raw_obs:

@@ -74,9 +74,10 @@ def test_a_window_of_all_zeros_loses_every_timestamp():
     obs = _obs(*["00m00s"] * 15)
     summary = _run(obs, rng="45:00-48:15")
     assert all(o["timestamp"] is None for o in obs)
-    assert summary["observation_time_rejects"][0] == {
-        "window": "1H_10-00-15-00", "range": "45:00-48:15",
-        "rejected": 15, "of": 15}
+    row = summary["observation_time_rejects"][0]
+    assert (row["window"], row["range"]) == ("1H_10-00-15-00", "45:00-48:15")
+    assert (row["rejected"], row["of"]) == (15, 15)
+    assert row["kept_by_clock"] == {}, "nothing survived on either clock"
 
 
 def test_a_genuine_within_window_reading_survives_untouched():
@@ -100,7 +101,7 @@ def test_the_rejected_value_is_kept_for_diagnosis_not_for_use():
     _run(obs)
     assert obs[0]["timestamp"] is None, "the field a reader uses must be empty"
     assert obs[0]["timestamp_rejected"] == "02m00s"
-    assert "no clock is defined" in obs[0]["timestamp_note"]
+    assert "does not say which clock" in obs[0]["timestamp_note"]
 
 
 def test_the_frame_reference_goes_with_it():
@@ -161,3 +162,82 @@ def test_the_reject_tally_is_recorded_per_window_not_just_totalled():
     rows = summary["observation_time_rejects"]
     assert [r["window"] for r in rows] == ["w1"], (
         "a window that kept everything must not appear as a reject row")
+
+
+# ── two absolute clocks, and a check that used only one ───────────────────
+#
+# window_plan carries three descriptions of the same window:
+#
+#   label       "1H 10:00-15:00"    minutes since kick-off
+#   start_s     950-1250            seconds of video
+#   start_frame frame_15m50s.jpg    video time, in the filename
+#
+# Kick-off is at video 350s on this match, so the two absolute clocks differ
+# by 5m50s for the whole game. The first version of this check validated
+# against the kick-off clock alone -- and the video clock is the only
+# absolute reference the agent can actually see, because it is in the name
+# of every frame it is shown. A correct video reading would have been
+# thrown away as out-of-window.
+
+KICKOFF_RANGE = "10:00-15:00"      # 600-900s since kick-off
+VIDEO_BOUNDS  = (950, 1250)        # the same window in video seconds
+
+
+def _run2(observations):
+    summary = {}
+    _validate_observation_times(observations, "w03", KICKOFF_RANGE,
+                                summary, VIDEO_BOUNDS)
+    return summary
+
+
+def test_a_reading_on_the_kickoff_clock_is_kept():
+    obs = _obs("12m30s")
+    _run2(obs)
+    assert obs[0]["timestamp"] == "12m30s"
+    assert obs[0]["timestamp_clock"] == "since_kickoff"
+
+
+def test_a_reading_on_the_video_clock_is_kept():
+    """This is the one the first version rejected."""
+    obs = _obs("16m30s")
+    _run2(obs)
+    assert obs[0]["timestamp"] == "16m30s", (
+        "a video-clock reading inside the window was thrown away; the video "
+        "clock is what the frame filenames carry")
+    assert obs[0]["timestamp_clock"] == "video"
+
+
+def test_a_value_outside_both_is_still_rejected():
+    obs = _obs("02m00s")
+    summary = _run2(obs)
+    assert obs[0]["timestamp"] is None
+    assert "either clock" in obs[0]["timestamp_note"]
+    assert summary["observation_time_rejects"][0]["rejected"] == 1
+
+
+def test_zero_is_not_rescued_by_the_second_clock():
+    """00m00s is outside both, which is the point. Accepting an offset from
+    the window start would make it legitimate everywhere -- and that is what
+    makes the 118 zeros indistinguishable from a default."""
+    obs = _obs("00m00s")
+    _run2(obs)
+    assert obs[0]["timestamp"] is None
+
+
+def test_which_clock_each_survivor_used_is_recorded():
+    """A field whose clock changes window to window is unusable even when
+    every value is individually defensible, so the mix has to be visible."""
+    obs = _obs("12m30s", "16m30s", "00m00s")
+    summary = _run2(obs)
+    assert summary["observation_time_rejects"][0]["kept_by_clock"] == {
+        "since_kickoff": 1, "video": 1}
+
+
+def test_without_plan_bounds_only_the_kickoff_clock_applies():
+    """window_plan may be missing. The check degrades rather than crashing,
+    and the note says only the clock it could actually test."""
+    obs = _obs("16m30s")
+    summary = {}
+    _validate_observation_times(obs, "w03", KICKOFF_RANGE, summary, None)
+    assert obs[0]["timestamp"] is None
+    assert "video" not in obs[0]["timestamp_note"]

@@ -136,3 +136,28 @@ def test_an_unparseable_timestamp_is_left_for_someone_else():
     obs = [{"player": "#1", "timestamp": "second half"}]
     _run(obs)
     assert obs[0]["timestamp"] == "second half"
+
+
+def test_a_survivor_is_not_certified_only_unrejected():
+    """26 of the 27 survivors on the real match sit in the first four
+    windows -- the only ones whose range covers the low numbers the agent
+    emits wherever it is looking. Sixteen consecutive windows from minute 20
+    kept nothing. A reader seeing "27 kept" would otherwise treat them as
+    measured, so the module has to say what they are."""
+    import inspect
+
+    import accumulator
+    doc = inspect.getdoc(accumulator._validate_observation_times) or ""
+    assert "coincidence" in doc.lower()
+    assert "does not certify" in doc.lower()
+
+
+def test_the_reject_tally_is_recorded_per_window_not_just_totalled():
+    """Which windows kept nothing is the signal. A single total would hide
+    that the losses are contiguous from minute 20 onward."""
+    summary = {}
+    _validate_observation_times(_obs("00m00s"), "w1", "10:00-15:00", summary)
+    _validate_observation_times(_obs("22m00s"), "w2", "20:00-25:00", summary)
+    rows = summary["observation_time_rejects"]
+    assert [r["window"] for r in rows] == ["w1"], (
+        "a window that kept everything must not appear as a reject row")

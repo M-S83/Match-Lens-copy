@@ -322,6 +322,15 @@ def _validate_observation_times(observations, window_id, timestamp_range,
     window start would "fix" the honest offsets and silently legitimise the
     indices and the zeros, which look identical once shifted.
 
+    SURVIVING THIS CHECK IS NOT A CLEAN BILL OF HEALTH. On the Gorleston
+    match it rejected 238 of 265, and 26 of the 27 survivors sit in the
+    first four windows -- the only ones whose own range covers the low
+    numbers the agent emits regardless of where it is looking. Sixteen
+    consecutive windows from minute 20 onward kept nothing at all. The
+    survivors passed by arithmetic coincidence, not because they were
+    observed, so this check bounds the damage; it does not certify what is
+    left.
+
     The frames on disk carry absolute time in their names
     (frame_00m00s.jpg ... frame_121m19s.jpg), so the fix upstream is to stop
     asking for a judgement that can be a copy: name the frame, and derive
@@ -2050,6 +2059,16 @@ def accumulate_all_windows(match_dir: str) -> dict:
         ps = json.load(f)
     ps.setdefault("total_sequences", len(ps.get("sequences", [])))
 
+    _rejects = summary.get("observation_time_rejects") or []
+    if _rejects:
+        _bad = sum(r["rejected"] for r in _rejects)
+        _all = sum(r["of"] for r in _rejects)
+        _kept_any = [r for r in _rejects if r["rejected"] < r["of"]]
+        print(f"  Observation times : {_bad} of {_all} rejected across "
+              f"{len(_rejects)} window(s) -- outside their own window")
+        if _all and _bad / _all > 0.5:
+            print(f"                      only {len(_kept_any)} window(s) kept "
+                  f"any; treat player timing as unavailable")
     print(f"  Windows complete:   {summary['windows_complete']}")
     print(f"  Pass sequences:     {ps['total_sequences']}")
     print(f"  Key moments:        {len(summary.get('key_moments', []))}")

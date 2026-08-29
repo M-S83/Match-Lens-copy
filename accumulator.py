@@ -20,6 +20,7 @@ Usage:
 """
 
 import json
+import re
 import os
 import sys
 import glob
@@ -277,6 +278,81 @@ def validate_set_piece(sp: dict, window_id) -> tuple:
         "second_phase":         sp.get("second_phase"),
     }
     return True, normalized, None
+
+
+_MMSS = re.compile(r"^(\d+)m(\d+)s$")
+
+
+def _window_bounds(timestamp_range):
+    """(start_s, end_s) from a "10:00-15:00" range, else None."""
+    if not isinstance(timestamp_range, str):
+        return None
+    parts = re.findall(r"(\d+):(\d+)", timestamp_range)
+    if len(parts) != 2:
+        return None
+    a, b = (int(m) * 60 + int(s) for m, s in parts)
+    return (a, b) if b > a else None
+
+
+def _validate_observation_times(observations, window_id, timestamp_range,
+                                summary):
+    """Null any observation timestamp that cannot belong to this window.
+
+    WHAT THIS FOUND, ON THE GORLESTON MATCH
+    ---------------------------------------
+    The schema asks for "timestamp": "[MMmSSs]" and never says which clock --
+    absolute video time, time since kick-off, or an offset within the window.
+    Each window's agent chose its own, and some chose none:
+
+      * the window covering 10:00-15:00 returned fifteen observations
+        stamped 00m00s, 01m00s, 02m00s ... 14m00s -- one per player, at
+        exactly one-minute intervals. That is an index, not a reading.
+      * the window covering 45:00-48:15 returned fifteen observations, all
+        stamped 00m00s.
+      * other windows returned irregular values (550s, 562s, 575s) that do
+        look observed.
+
+    Across 265 observations of a 121-minute match, not one timestamp exceeds
+    25 minutes. They cannot be absolute. And frames[0] equals the timestamp
+    in 264 of 265 cases -- the filename is generated from the number rather
+    than the number being read off a frame.
+
+    A timestamp outside its own window is not a reading whatever the agent
+    intended by it, so it is removed rather than reinterpreted. Adding the
+    window start would "fix" the honest offsets and silently legitimise the
+    indices and the zeros, which look identical once shifted.
+
+    The frames on disk carry absolute time in their names
+    (frame_00m00s.jpg ... frame_121m19s.jpg), so the fix upstream is to stop
+    asking for a judgement that can be a copy: name the frame, and derive
+    the time from the filename here.
+    """
+    bounds = _window_bounds(timestamp_range)
+    if not bounds or not observations:
+        return
+    start_s, end_s = bounds
+    dropped = 0
+    for obs in observations:
+        m = _MMSS.match(str(obs.get("timestamp") or ""))
+        if not m:
+            continue
+        seconds = int(m.group(1)) * 60 + int(m.group(2))
+        if start_s <= seconds <= end_s:
+            continue
+        obs["timestamp_rejected"] = obs["timestamp"]
+        obs["timestamp"] = None
+        obs["timestamp_note"] = (
+            "outside window %s (%s); no clock is defined for this field"
+            % (window_id, timestamp_range))
+        # frames[0] is generated from the timestamp in 264 of 265 cases, so
+        # it names footage this observation was not taken from.
+        if obs.get("frames"):
+            obs["frames_rejected"] = obs.pop("frames")
+        dropped += 1
+    if dropped:
+        summary.setdefault("observation_time_rejects", []).append(
+            {"window": window_id, "range": timestamp_range,
+             "rejected": dropped, "of": len(observations)})
 
 
 def build_set_piece_queue_entry(sp: dict, window_id) -> dict:
@@ -621,6 +697,8 @@ def update_running_summary(merged_path: str,
     summary["key_moments"].extend(w.get("key_moments", []))
     # Grade each observation as it is accumulated
     raw_obs = w.get("individual_observations", [])
+    _validate_observation_times(raw_obs, w.get("window"),
+                                w.get("timestamp_range"), summary)
     try:
         import deep_skill_metrics as _dsm
         for obs in raw_obs:

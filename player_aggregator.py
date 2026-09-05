@@ -857,10 +857,22 @@ def build_card(player_rec, running_summary, match_config, source_profile,
 
     # Source-driven gate notes
     src_note = None
+    # O10: this defaulted a missing score to 1 -- "fully observable" -- while
+    # zone_helpers defaulted the same absent field to 0, "not observable at
+    # all". The two files disagreed by the whole range, and each was asserting
+    # a coverage figure nobody had measured. Absent is now None in both, and
+    # None suppresses the note here rather than silently claiming coverage was
+    # good enough that no limitation applied.
     off_ball_cov = (
-        source_profile.get("visibility_scores", {}).get("off_ball_coverage_score", 1)
+        source_profile.get("visibility_scores", {}).get("off_ball_coverage_score")
     )
-    if off_ball_cov < 0.4 and temperament is None:
+    if off_ball_cov is None and temperament is None:
+        src_note = (
+            "Source profile records no off_ball_coverage_score, so whether "
+            "temperament and off-ball movement were observable is unknown. "
+            "Their absence here is not evidence they did not occur."
+        )
+    elif off_ball_cov is not None and off_ball_cov < 0.4 and temperament is None:
         src_note = (
             f"Source off_ball_coverage_score {off_ball_cov:.2f} below 0.4 -- "
             "temperament observations were not produced; partnership and "

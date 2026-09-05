@@ -142,6 +142,17 @@ DERIVED_FIELDS = {
     "line_height_m_by_window.avg_m_approx": [
         "line_height_m_by_window.home_height_pct",
         "line_height_m_by_window.away_height_pct"],
+    # O7: the focus team's own line, as distinct from the both-teams mean.
+    # focus_height_pct is whichever of home/away the focus resolves to, so it
+    # falls when that reading does.
+    "line_height_m_by_window.focus_height_pct": [
+        "line_height_m_by_window.home_height_pct",
+        "line_height_m_by_window.away_height_pct"],
+    # Names the monitored roots, not focus_height_pct: a derivation must point
+    # at fields that are actually watched, or it can never fire.
+    "line_height_m_by_window.focus_m_approx": [
+        "line_height_m_by_window.home_height_pct",
+        "line_height_m_by_window.away_height_pct"],
 }
 
 # Fields that live in a monitored list and are deliberately neither monitored
@@ -161,6 +172,12 @@ INDEPENDENT = {
     "formation_history.agent_id":            "which agent produced the record",
     "line_height_m_by_window.window":        "window label",
     "line_height_m_by_window.agent_id":      "which agent produced the record",
+    # O6: the pitch used for the percentage-to-metres conversion, and where
+    # that length came from. Constant across a match by design -- flagging it
+    # as an invariant reading would be a false positive, since one pitch not
+    # changing size mid-match is the correct behaviour.
+    "line_height_m_by_window.pitch_length_m":     "conversion constant, not a reading",
+    "line_height_m_by_window.pitch_length_basis": "provenance of the pitch length",
     "possession_by_window.window":           "window label",
     "pressing_by_window.window":             "window label",
     "pressing_by_window.agent_id":           "which agent produced the record",

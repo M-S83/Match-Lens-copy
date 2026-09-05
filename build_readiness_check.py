@@ -136,8 +136,12 @@ def build_readiness_check(match_dir: str) -> bool:
     # -- Source profile --------------------------------------------------------
     source_profile_present   = bool(source_prof)
     source_type              = (source_prof or {}).get("source_type", "unknown")
-    source_confidence        = (source_prof or {}).get("classification_confidence", 0.0)
-    source_profile_confident = source_confidence >= 0.6
+    # O17: None, not 0.0. A missing profile or a profile with no confidence
+    # field has not been measured, and 0.0 reads as a genuine zero-confidence
+    # classification -- published alongside report_ready: true.
+    source_confidence        = (source_prof or {}).get("classification_confidence")
+    source_profile_confident = (source_confidence is not None
+                                and source_confidence >= 0.6)
     split_aware              = (source_prof or {}).get("split_aware", False)
     # Fix 38: broadcast source_profile.json stores the limitation under "notes",
     # not "source_limitations_note". Prefer either-key so broadcast runs no longer
@@ -148,9 +152,30 @@ def build_readiness_check(match_dir: str) -> bool:
         f for f, s in (result_gates or {}).get("gates", {}).items()
         if s == "downgraded"
     ]
-    suppressed_families = []   # no suppressed families in this pipeline
+    # O1: this was `suppressed_families = []` with the comment "no suppressed
+    # families in this pipeline". That comment is false -- source_profiler
+    # assigns "suppressed" (source_profiler.py:165, :196) and reads it back at
+    # :212. So the one artefact whose job is to state what could NOT be
+    # measured asserted that nothing was suppressed, on every run, without
+    # looking. Computed the same way as downgraded_families directly above.
+    suppressed_families = [
+        f for f, s in (result_gates or {}).get("gates", {}).items()
+        if s == "suppressed"
+    ]
 
-    if source_prof and not source_profile_confident:
+    # O17: an absent source profile gave classification_confidence 0.0, which
+    # is indistinguishable from a real zero-confidence classification and was
+    # published as a number. None means "not measured"; the guard below now
+    # blocks on unknown as well as low, because a confidence nobody read is
+    # not evidence the classification was good.
+    if source_prof and source_confidence is None:
+        blocking.append(
+            "source_profile.json records no classification_confidence -- "
+            "cannot tell whether source_type "
+            f"{source_type!r} was classified or defaulted. "
+            "Review source_profile.json before reporting."
+        )
+    elif source_prof and not source_profile_confident:
         blocking.append(
             f"Source classification confidence low ({source_confidence:.2f}) "
             f"-- source_type defaulted to {source_type}. "
@@ -254,8 +279,11 @@ def build_readiness_check(match_dir: str) -> bool:
             "available":           deep_metrics is not None,
             "total_metrics":       (deep_metrics or {}).get("total_metrics", 0),
             "active_metrics":      (deep_metrics or {}).get("active_metrics", 0),
+            # O17: None when there are no metrics. 0.0 here reported "every
+            # metric came back at zero confidence" for a step that had not
+            # run, in the file whose entire subject is confidence.
             "suppressed_metrics":  (deep_metrics or {}).get("suppressed_metrics", []),
-            "avg_confidence":      (deep_metrics or {}).get("avg_confidence", 0.0),
+            "avg_confidence":      (deep_metrics or {}).get("avg_confidence"),
         },
     }
     rel_path = os.path.join(match_dir, "confidence_reliability_report.json")
@@ -265,7 +293,10 @@ def build_readiness_check(match_dir: str) -> bool:
 
     if deep_metrics:
         dm = deep_metrics
-        print(f"  Metrics:         {dm.get('active_metrics',0)} active | {len(dm.get('suppressed_metrics',[]))} suppressed | avg conf: {dm.get('avg_confidence',0.0)}")
+        _avg = dm.get("avg_confidence")
+        print(f"  Metrics:         {dm.get('active_metrics',0)} active | "
+              f"{len(dm.get('suppressed_metrics',[]))} suppressed | avg conf: "
+              f"{'unavailable' if _avg is None else _avg}")
     else:
         print("  [!]  deep_skill_metrics.json not found -- run Step 3k before Step 4")
 

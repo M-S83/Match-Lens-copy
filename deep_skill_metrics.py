@@ -996,10 +996,32 @@ def worst_evidence_tier(tiers):
     return "suggestive"
 
 
+def source_global_cap(source_type):
+    """(cap, recognised) for a source type.
+
+    O16: this was `SOURCE_GLOBAL_CAP.get(source_type, 0.5)`. The number it
+    produced was conservative -- 0.5 is the lowest cap in the table -- so the
+    defect was never an over-generous confidence. It was silence. A source
+    string nobody recognised produced a confidence indistinguishable from one
+    measured against a known source, and "confidence 0.5" then read as a
+    property of the footage rather than of our ignorance of it.
+
+    The fallback stays the most conservative cap in the table, computed from
+    the table so it cannot drift away from it, and the caller is told the cap
+    was defaulted so the metric can say so.
+    """
+    if source_type in SOURCE_GLOBAL_CAP:
+        return SOURCE_GLOBAL_CAP[source_type], True
+    return min(SOURCE_GLOBAL_CAP.values()), False
+
+
 def compute_metric_confidence(base, required_families, gates, evidence_tiers, windows_contributing, source_type):
     confidence = base
     worst_tier = worst_evidence_tier(evidence_tiers)
-    cap = EVIDENCE_TIER_CAP.get(worst_tier, 0.4)
+    # worst_evidence_tier only ever returns a key of this table, so no default
+    # is reachable here; indexing says so, where .get(..., 0.4) implied a
+    # fallback that could not fire.
+    cap = EVIDENCE_TIER_CAP[worst_tier]
     confidence = min(confidence, cap)
 
     max_penalty = 0.0
@@ -1014,7 +1036,7 @@ def compute_metric_confidence(base, required_families, gates, evidence_tiers, wi
     if 0 < windows_contributing < MIN_WINDOWS:
         confidence -= 0.15
 
-    global_cap = SOURCE_GLOBAL_CAP.get(source_type, 0.5)
+    global_cap, source_recognised = source_global_cap(source_type)
     confidence = min(confidence, global_cap)
     confidence = max(0.0, round(confidence, 2))
 
@@ -1024,6 +1046,17 @@ def compute_metric_confidence(base, required_families, gates, evidence_tiers, wi
     else:
         status_out = "allowed"
         limitation = None
+
+    # O16: say that the cap was defaulted. Without this the reader cannot tell
+    # a confidence measured against a known source from one capped because the
+    # source string was unrecognised.
+    if not source_recognised:
+        note = (f"Source type {source_type!r} is not in the source-cap table; "
+                f"confidence capped at the most conservative value "
+                f"({global_cap}) because the footage's actual limits are "
+                f"unknown, not because they were measured.")
+        limitation = f"{limitation} | {note}" if limitation else note
+        status_out = "downgraded"
 
     return confidence, status_out, limitation
 
@@ -2036,7 +2069,19 @@ def _metric_compactness_geometry(summary, source_type):
     Stretched = wide line + high height (advanced press).
     Returns a profile, not a single 0-1 score."""
     rows = summary.get("line_height_m_by_window", [])
-    heights = [r["avg_m_approx"] for r in rows if r.get("avg_m_approx") is not None]
+    # O7: this read avg_m_approx -- the mean of BOTH teams' defensive lines --
+    # and published it under subject_team "focus". A focus side defending at
+    # 31.5 m was reported at 47.3 m, "high line", whenever the opponent
+    # pressed high: not absent data, but data attributed to the wrong subject,
+    # which is worse because it looks like a reading and is one, of someone
+    # else. Prefer the focus team's own line; fall back to the mean only when
+    # the per-team split is unavailable, and say so in that case.
+    heights = [r["focus_m_approx"] for r in rows
+               if r.get("focus_m_approx") is not None]
+    subject_is_focus = bool(heights)
+    if not heights:
+        heights = [r["avg_m_approx"] for r in rows
+                   if r.get("avg_m_approx") is not None]
     widths = [r["line_width_m_approx"] for r in rows if r.get("line_width_m_approx") is not None]
     behinds = [r["space_behind_m"] for r in rows if r.get("space_behind_m") is not None]
 
@@ -2052,10 +2097,23 @@ def _metric_compactness_geometry(summary, source_type):
         "compactness_geometry_score", source_type
     )
 
+    # O7: the label must follow the data. If only the both-teams mean was
+    # available, this is a match-level figure and saying "focus" would
+    # attribute one team's number to another.
+    if subject_is_focus:
+        subject, subject_note = "focus", None
+    else:
+        subject, subject_note = "both", (
+            "Line height is the mean of both teams: the per-team split was "
+            "not recorded for these windows, so this is not the focus team's "
+            "own line and must not be read as one.")
+    if subject_note:
+        note = f"{note} | {subject_note}" if note else subject_note
+
     return {
         "metric_name":   "compactness_geometry_score",
         "analysis_scope":"match",
-        "subject_team":  "focus",
+        "subject_team":  subject,
         "value": {
             "avg_line_height_m":    round(avg_height, 1),
             "avg_line_width_m":     round(avg_width, 1),
@@ -2348,7 +2406,11 @@ def build_deep_skill_metrics(match_dir, team_label="both", confidence_level=2):
     source_prof   = data["source"]
     confirmations = data["confirmations"]
     source_type   = source_prof.get("source_type", "unknown")
-    global_cap    = SOURCE_GLOBAL_CAP.get(source_type, 0.5)
+    global_cap, source_recognised = source_global_cap(source_type)
+    if not source_recognised:
+        print(f"  [WARN] source_type {source_type!r} is not in the source-cap "
+              f"table. Every metric is capped at {global_cap} because the "
+              f"footage's limits are unknown, not measured.")
     total_windows = summary.get("windows_complete", 1)
 
     metrics = []

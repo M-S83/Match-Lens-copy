@@ -497,6 +497,50 @@ def append_to_confirmation_queue(entries: list, queue_path: str) -> int:
     return appended
 
 
+DEFAULT_PITCH_LENGTH_M = 105.0     # UEFA default, used only when the venue is unknown
+
+
+def _resolve_pitch_length(merged_path: str, summary: dict):
+    """(length_m, basis) for converting line-height percentages to metres.
+
+    O6: every conversion assumed 105 m and nothing consulted the venue, so a
+    pitch recorded as 100 m still produced figures computed at 105 -- ~5% on
+    every distance in the report. Order: an explicit pitch_length_m in
+    match_config, then pitch_validation's venue table, then the UEFA default
+    labelled as an assumption rather than presented as a measurement.
+    """
+    mc = {}
+    try:
+        cfg_path = os.path.join(
+            os.path.dirname(os.path.dirname(merged_path)), "match_config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, encoding="utf-8") as f:
+                mc = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        mc = {}
+
+    explicit = mc.get("pitch_length_m")
+    if isinstance(explicit, (int, float)) and 80 <= explicit <= 130:
+        return float(explicit), f"match_config.pitch_length_m = {explicit}"
+
+    try:
+        from pitch_validation import KNOWN_NON_STANDARD_VENUES
+        venue = str(mc.get("venue", "")).lower()
+        if venue:
+            for substring, dims in KNOWN_NON_STANDARD_VENUES.items():
+                if substring.lower() in venue and dims.get("length_m"):
+                    return (float(dims["length_m"]),
+                            f"pitch_validation venue table: {substring}")
+    except ImportError:
+        pass
+
+    summary.setdefault("pitch_length_assumed", True)
+    return DEFAULT_PITCH_LENGTH_M, (
+        f"assumed {DEFAULT_PITCH_LENGTH_M} m -- venue not in the pitch table "
+        f"and match_config carries no pitch_length_m; metre figures are "
+        f"approximate and unverified")
+
+
 def update_running_summary(merged_path: str,
                             summary_path: str,
                             queue_path: "str | None" = None) -> dict:
@@ -689,8 +733,22 @@ def update_running_summary(merged_path: str,
         "observations":   trigger_observations,
     })
 
-    # Defensive line -- store both pct and metres
-    def _pct_to_m(pct, pitch=105.0):
+    # Defensive line -- store both pct and metres.
+    #
+    # O6: the pitch length was hardcoded 105.0 at every call site, and
+    # pitch_validation.KNOWN_NON_STANDARD_VENUES -- which exists precisely to
+    # record that this venue is not 105 -- was never consulted. A correctly
+    # recorded 100 m pitch still produced metre figures computed at 105 m, a
+    # 5% overstatement of every line-height distance in the reports.
+    #
+    # The percentage is the measurement; metres is a conversion, and the
+    # conversion carries an assumption. Resolve it from the venue where that
+    # is known, and record which happened so a reader can tell a measured
+    # metre figure from an assumed one.
+    _pitch_len, _pitch_basis = _resolve_pitch_length(merged_path, summary)
+
+    def _pct_to_m(pct, pitch=None):
+        pitch = _pitch_len if pitch is None else pitch
         return round(pct / 100.0 * pitch, 1) if pct is not None else None
 
     dl = w.get("defensive_line", {})
@@ -738,11 +796,35 @@ def update_running_summary(merged_path: str,
     if avg_m_approx is None:
         avg_m_approx = _pct_to_m(derived_avg_pct)
 
+    # O7: avg_pct is the mean of BOTH teams' lines. Keep it, but also carry the
+    # focus team's own height, because _metric_compactness_geometry publishes
+    # avg_m_approx under subject_team "focus" -- a focus side defending at
+    # 31.5 m was reported at 47.3 m ("high line") whenever the opponent
+    # pressed high. Which of home/away is the focus is resolved below.
+    _focus_pct = None
+    try:
+        _fc_path = os.path.join(
+            os.path.dirname(os.path.dirname(merged_path)), "match_config.json")
+        if os.path.exists(_fc_path):
+            with open(_fc_path, encoding="utf-8") as _fcf:
+                _fc = json.load(_fcf)
+            _focus = (_fc.get("focus_team") or "").strip().lower()
+            if _focus in ("home", str(_fc.get("home_team", "")).strip().lower()):
+                _focus_pct = home_height_pct
+            elif _focus in ("away", str(_fc.get("away_team", "")).strip().lower()):
+                _focus_pct = away_height_pct
+    except (OSError, json.JSONDecodeError):
+        _focus_pct = None
+
     summary["line_height_m_by_window"].append({
         "window":              w.get("window"),
         "agent_id":            w.get("agent_id"),
         "avg_pct":             derived_avg_pct,
         "avg_m_approx":        avg_m_approx,
+        "focus_height_pct":    _focus_pct,
+        "focus_m_approx":      _pct_to_m(_focus_pct),
+        "pitch_length_m":      _pitch_len,
+        "pitch_length_basis":  _pitch_basis,
         "line_width_m_approx": dl.get("line_width_m_approx"),
         "space_behind_m":      dl.get("space_behind_m"),
         "home_height_pct":     home_height_pct,

@@ -330,10 +330,28 @@ def validate_between_lines(zone_obj, source_profile):
             "downgrade_reason":    None,
         }
 
+    # O10: this defaulted a missing score to 0, which tripped the < 0.4 branch
+    # and then reported "off_ball_coverage_score 0.00 below 0.4" -- stating a
+    # measurement of 0.00 that was never taken. The downgrade itself is right
+    # either way (an unverifiable observability claim must not be kept), but
+    # the reason has to say which of the two happened, because one is a
+    # property of the footage and the other is a gap in our own profiling.
     coverage = (
         source_profile.get("visibility_scores", {})
-        .get("off_ball_coverage_score", 0)
+        .get("off_ball_coverage_score")
     )
+
+    if coverage is None:
+        return {
+            "between_lines_kept":  False,
+            "between_lines_value": None,
+            "downgrade_reason": (
+                "Source profile records no off_ball_coverage_score, so whether "
+                "between-lines position is observable in this footage is "
+                "unknown -- not measured as poor. Downgraded to null because "
+                "an unverifiable observability claim cannot be kept."
+            ),
+        }
 
     if coverage < 0.4:
         return {
